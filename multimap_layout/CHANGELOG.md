@@ -1,5 +1,9 @@
 # Cambios
 
+## 1.0.1
+- Corrige la barra de pestañas de Layout que aparecía sobre el menú (Proyecto/Edición) al abrir QGIS con el complemento ya activo.
+- El widget central original de QGIS se retira con takeCentralWidget (Qt ya no puede borrarlo) y se restaura bien al descargar el complemento.
+
 ## 1.0.0
 - Aislamiento de capas por mapa: las capas de los mapas inactivos salen del registro del proyecto.
 - Formato de proyecto portable (legible con o sin el complemento) y migración automática desde 0.8.x.

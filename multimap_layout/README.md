@@ -1,4 +1,4 @@
-# Multimap Layout 1.0.0
+# Multimap Layout 1.0.1
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
 Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Probado en 3.34 y 4.2.

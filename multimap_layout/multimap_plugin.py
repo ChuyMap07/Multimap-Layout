@@ -252,7 +252,9 @@ class MultiMapPlugin:
 
         if self.placer is not None:     # colores definitivos cuando la ventana ya esta pintada
             QTimer.singleShot(300, self._restyle)
-        self._main_central = win.centralWidget()
+        # takeCentralWidget: QMainWindow no debe borrar el widget central original de QGIS
+        # (lienzo, barra de mensajes) al poner el contenedor de vistas en su lugar.
+        self._main_central = win.takeCentralWidget()
         self.view_stack = QStackedWidget(win)
         self.view_stack.addWidget(self._main_central)
         win.setCentralWidget(self.view_stack)
@@ -345,9 +347,14 @@ class MultiMapPlugin:
                 pass
         if self.view_stack is not None and self._main_central is not None:
             try:
+                win = self.iface.mainWindow()
+                stack = win.takeCentralWidget()
                 self.view_stack.removeWidget(self._main_central)
-                self._main_central.setParent(self.iface.mainWindow())
-                self.iface.mainWindow().setCentralWidget(self._main_central)
+                self._main_central.setParent(win)
+                win.setCentralWidget(self._main_central)
+                if stack is not None:
+                    stack.deleteLater()
+                self.view_stack = None
             except Exception:
                 pass
         if self._layout_toolbar_window is not None:
@@ -975,6 +982,11 @@ class MultiMapPlugin:
         self.layout_toolbar.setObjectName("MultiMapLayoutViewToolbar")
         self.layout_toolbar.setMovable(False)
         self.layout_toolbar.setFloatable(False)
+        # Oculta de forma explicita: la barra es hija de la ventana principal pero no esta
+        # acoplada a ella. Si QGIS carga el complemento al arrancar (ventana aun sin mostrar),
+        # Qt la mostraria junto con la ventana en la esquina (0,0), tapando el menu
+        # Proyecto/Edicion. Solo se muestra al acoplarla al diseñador de Layout.
+        self.layout_toolbar.hide()
         h = self.layout_tabbar.row_height()
         self.layout_add_map = QToolButton()
         self.layout_add_map.setText("+")
