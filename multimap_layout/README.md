@@ -5,6 +5,8 @@ Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Pruebas automática
 
 Instalar: QGIS > Complementos > Instalar desde ZIP > multimap_layout.zip
 
+Código y reporte de errores: https://github.com/ChuyMap07/Multimap-Layout (errores en *Issues*).
+
 ## Idea general
 Cada mapa (pestaña) tiene sus propias capas, su árbol, su CRS, su extensión, su rotación, sus filtros y su simbología.
 Los mapas son independientes: **las capas no se comparten**. Las capas de los mapas que no están activos se sacan del registro del
