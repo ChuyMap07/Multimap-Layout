@@ -1,4 +1,4 @@
-# Multimap Layout 1.1.0
+# Multimap Layout 1.2.0
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
 Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Probado en 3.34 y 4.2.
@@ -15,11 +15,23 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
 - Aspecto de ArcGIS Pro, con la pestaña activa en verde; incluye mapas y Layouts abiertos. Doble clic renombra; arrastra para
   reordenar; la X aparece en la pestaña activa y al pasar el cursor.
 - "+" crea un mapa vacío. Los Layouts aparecen como pestaña al crearlos con el botón normal de QGIS.
-- Al elegir un Layout, el diseñador se integra en la ventana principal y la barra Multimapa queda en la misma posición que en la
-  vista de mapas. Elegir un mapa vuelve al lienzo principal. Cerrar la pestaña usa el aviso normal de QGIS.
-- Clic derecho: renombrar y cerrar; en mapas también duplicar y mover a otra pantalla. Se pueden arrastrar pestañas fuera de la
-  barra para abrir mapas en ventana propia o mover Layouts a otro monitor.
-- Las ventanas flotantes de mapa tienen árbol de capas, navegación, identificación y escala.
+- Al elegir un Layout, el diseñador se integra en la ventana principal y las pestañas quedan pegadas encima de la hoja del
+  Layout, igual que en la vista de mapas quedan encima del lienzo. Elegir un mapa vuelve al lienzo principal.
+- Clic derecho: renombrar y cerrar; en mapas también duplicar, abrir al lado y abrir en otra pantalla. Se pueden arrastrar
+  pestañas fuera de la barra para abrir mapas en ventana propia o mover Layouts a otro monitor.
+- Botón de enlace (🔗) a la derecha de la barra: navegación enlazada entre el lienzo principal, las vistas acopladas y las
+  ventanas. Clic lo activa o desactiva; la flecha elige el modo: *Enlazar centro* o *Enlazar centro y escala*. El centro se
+  transforma entre los CRS de cada mapa.
+
+## Vistas lado a lado
+- Pestaña o Catálogo > clic derecho > **Abrir al lado**: el mapa se acopla a la derecha del lienzo principal, dentro de la
+  ventana de QGIS. Se pueden acoplar varios (se apilan) y ajustar el tamaño con los divisores.
+- Cada vista acoplada tiene navegación, extensión completa / anterior / siguiente, identificar, medir, escala y coordenadas.
+- **Activar** en su cabecera intercambia: ese mapa pasa al lienzo principal (con todas las herramientas de QGIS y edición) y el
+  mapa que estaba activo ocupa su lugar en la vista acoplada. **↗** la pasa a ventana propia; **✕** cierra la vista.
+- Las vistas acopladas y el modo de enlace se guardan con el proyecto.
+- Las ventanas propias tienen además el árbol de capas del mapa (orden, grupos, visibilidad) y los botones *Activar en el lienzo
+  principal* y *Acoplar al lado*.
 
 ## Catálogo
 - Panel con todos los mapas y Layouts del proyecto (el activo en negrita, los cerrados en cursiva).
@@ -31,7 +43,8 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
 - **Duplicar mapa / Copiar capa:** cada capa se copia de forma independiente: capas temporales (con sus datos), filtros, uniones,
   capas virtuales y estilo. Panel de Capas, clic derecho > Multimapa: Copiar / Mover a otro mapa.
 - **Por mapa:** CRS (el CRS del proyecto sigue al de la pestaña activa), extensión, rotación, capa activa, estructura del árbol
-  (grupos, orden, visibilidad, expandido, grupos exclusivos y propiedades de los nodos). La selección de entidades es de cada capa y,
+  (grupos, orden, visibilidad, expandido, grupos exclusivos y propiedades de los nodos) y el orden de renderizado personalizado
+  (panel Orden de capas). La selección de entidades es de cada capa y,
   como las capas no se comparten, también queda por mapa.
 - **Capas en edición:** al cambiar de mapa con capas en edición, sin cambios pendientes solo se termina la edición; con cambios
   aparece Guardar / Descartar / Cancelar.
@@ -53,7 +66,9 @@ volver a guardarlo sin perder nada. Con el complemento, esos grupos se reconocen
   ocultas vuelven al proyecto en un grupo.
 
 ## Limitaciones conocidas
-- Orden de renderizado personalizado del proyecto (`customLayerOrder`): es global, no por mapa.
+- Las vistas acopladas y las ventanas solo navegan, identifican y miden; para editar o usar otras herramientas de QGIS se pulsa
+  *Activar* (el lienzo principal es el único conectado a todas las herramientas de QGIS).
+- Un mapa solo puede estar en una vista secundaria a la vez (acoplada o en ventana).
 - Proyectos guardados en base de datos o en red permanecen en el formato propio.
 - No se ha probado con proyectos muy grandes ni con deshacer/rehacer entre cambios de mapa.
 - Interfaz solo en español.

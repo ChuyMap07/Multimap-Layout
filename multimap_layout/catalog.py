@@ -138,6 +138,11 @@ class CatalogDock(QDockWidget):
             is_map = key.startswith("map:")
             opened = p.is_view_open(key)
             menu.addAction("Abrir").triggered.connect(lambda *_: p.catalog_open(key))
+            if is_map:
+                a_side = menu.addAction("Abrir al lado")
+                a_side.setEnabled(key[4:] != p.active_id)
+                a_side.triggered.connect(lambda *_: p.open_side_map(key[4:]))
+                menu.addAction("Abrir en ventana").triggered.connect(lambda *_: p.side_to_window(key[4:]))
             a_close = menu.addAction("Cerrar vista")
             a_close.setEnabled(opened)
             a_close.triggered.connect(lambda *_: p.catalog_close(key))

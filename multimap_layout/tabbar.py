@@ -4,7 +4,7 @@
 * Pestanas planas y delgadas, con icono de mapa a la izquierda.
 * La pestana activa va rellena de verde con texto blanco.
 * El boton de cerrar solo aparece en la pestana activa y en la que esta bajo el cursor.
-* La barra se coloca dentro del widget central de QGIS, pegada al lienzo (sin dock).
+* La barra se coloca pegada encima de la vista (lienzo de mapa u hoja de Layout), sin dock.
 Los colores salen de la paleta de QGIS, asi que funciona en tema claro y oscuro.
 """
 import os
@@ -208,7 +208,7 @@ class StripPlacer(QObject):
     Se reserva arriba un margen del alto de la barra en el layout del widget central
     y la barra se superpone en ese hueco: queda pegada al lienzo, sin separadores de dock."""
 
-    def __init__(self, strip, host, canvas=None):
+    def __init__(self, strip, host, canvas=None, overlap=None):
         super().__init__(host)
         lay = host.layout() if host is not None else None
         if lay is None:
@@ -217,9 +217,9 @@ class StripPlacer(QObject):
         self._saved = lay.contentsMargins()
         m = self._saved
         # El lienzo de QGIS empieza unos px mas abajo que su contenedor (marco): ese hueco
-        # se cubre con la barra para que quede realmente pegada al mapa.
-        off = 2
-        if canvas is not None:
+        # se cubre con la barra para que quede realmente pegada al mapa. 'overlap' lo fija a mano.
+        off = 2 if overlap is None else int(overlap)
+        if canvas is not None and overlap is None:
             try:
                 lay.activate()
                 y = canvas.viewport().mapTo(host, QPoint(0, 0)).y() - m.top()
@@ -243,6 +243,20 @@ class StripPlacer(QObject):
         ):
             self.place()
         return False
+
+    def detach(self):
+        """Quita la barra del contenedor SIN destruirla (se reutiliza en otro diseñador)."""
+        try:
+            self.host.removeEventFilter(self)
+            m = self._saved
+            self.lay.setContentsMargins(m.left(), m.top(), m.right(), m.bottom())
+        except RuntimeError:
+            pass    # el diseñador ya se destruyo
+        try:
+            self.strip.hide()
+            self.strip.setParent(None)
+        except RuntimeError:
+            pass
 
     def remove(self):
         try:

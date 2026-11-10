@@ -18,6 +18,7 @@ import uuid
 
 from qgis.core import (
     QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
     QgsFeature,
     QgsLayerTree,
     QgsLayerTreeGroup,
@@ -44,11 +45,11 @@ from qgis.PyQt.QtWidgets import (
     QApplication,
     QDockWidget,
     QHBoxLayout,
-    QVBoxLayout,
     QInputDialog,
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QToolBar,
     QToolButton,
@@ -63,7 +64,7 @@ except ImportError:  # PyQt5 sin shim
 from .catalog import CatalogDock
 from .common import FLAT, KEY, NONE, PROP, SKIP, qenum
 from .dialogs import LayoutDialog, TabNameEdit
-from .map_window import MapViewWindow
+from .map_window import MapViewWindow, SideMapView
 from .portable import GROUP_PROP, make_portable
 from .tabbar import (
     ProTabBar,
@@ -192,9 +193,14 @@ class MultiMapPlugin:
         self._legacy_noted = set()      # layouts a los que ya se ofrecio enlazar elementos sueltos
         self._unloaded = False
         self._active_designer = None
-        self._layout_toolbar_window = None
-        self._map_strip_pos = None
-        self._align_gen = 0
+        self._layout_strip_window = None   # diseñador que tiene ahora la fila de pestañas
+        self._layout_placer = None
+        self._layout_fallback_tb = None
+        self._map_page = None              # splitter: lienzo principal | vistas acopladas
+        self._side_column = None
+        self.link_mode = "none"            # navegacion enlazada: none | center | scale
+        self._linking = False
+        self._pending_side = []
         self.active_view_key = None
         self._main_central = None
         self.view_stack = None
@@ -235,6 +241,27 @@ class MultiMapPlugin:
         lay.addWidget(self.tabbar)
         lay.addWidget(self.btn_add)
         lay.addStretch(1)
+        # Navegacion enlazada entre el lienzo principal y las vistas acopladas / en ventana.
+        self.btn_link = QToolButton()
+        self.btn_link.setText("\U0001F517")
+        self.btn_link.setCheckable(True)
+        self.btn_link.setAutoRaise(True)
+        self.btn_link.setFixedSize(h + 10, h)
+        self.btn_link.setStyleSheet(add_button_stylesheet(colors))
+        link_menu = QMenu(self.btn_link)
+        self._link_actions = {}
+        for mode, text in (("none", "Sin enlazar"), ("center", "Enlazar centro"),
+                           ("scale", "Enlazar centro y escala")):
+            act = link_menu.addAction(text)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, m=mode: self.set_link_mode(m))
+            self._link_actions[mode] = act
+        self.btn_link.setMenu(link_menu)
+        self.btn_link.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "MenuButtonPopup"))
+        self.btn_link.clicked.connect(
+            lambda *_: self.set_link_mode("none" if self.link_mode != "none" else "scale"))
+        lay.addWidget(self.btn_link)
+        self._update_link_button()
 
         self.strip = w
         self.placer = None
@@ -259,7 +286,18 @@ class MultiMapPlugin:
         # (lienzo, barra de mensajes) al poner el contenedor de vistas en su lugar.
         self._main_central = win.takeCentralWidget()
         self.view_stack = QStackedWidget(win)
-        self.view_stack.addWidget(self._main_central)
+        # Pagina de mapas: lienzo principal de QGIS y, a su derecha, las vistas acopladas.
+        self._map_page = QSplitter(qenum(Qt, "Orientation", "Horizontal"))
+        self._map_page.setObjectName("MultiMapViewsSplitter")
+        self._map_page.setChildrenCollapsible(False)
+        self._map_page.addWidget(self._main_central)
+        self._side_column = QSplitter(qenum(Qt, "Orientation", "Vertical"))
+        self._side_column.setChildrenCollapsible(False)
+        self._map_page.addWidget(self._side_column)
+        self._map_page.setStretchFactor(0, 3)
+        self._map_page.setStretchFactor(1, 2)
+        self._side_column.hide()
+        self.view_stack.addWidget(self._map_page)
         win.setCentralWidget(self.view_stack)
         self.tabbar.setContextMenuPolicy(qenum(Qt, "ContextMenuPolicy", "CustomContextMenu"))
         self._connect_tabbar(self.tabbar)
@@ -327,6 +365,7 @@ class MultiMapPlugin:
             pass
         self.canvas.destinationCrsChanged.connect(self._on_crs_changed)
         self.canvas.extentsChanged.connect(self._sync_floating_from_main)
+        self.canvas.extentsChanged.connect(self._on_main_extent_changed)
         try:
             self._layer_model = self.iface.layerTreeView().model()
             self._layer_model_signals = []
@@ -351,34 +390,33 @@ class MultiMapPlugin:
         for designer in self._designers():
             try:
                 window = designer.window()
-                if self._layout_toolbar_window is window:
-                    self._detach_layout_toolbar(window)
+                self._detach_layout_toolbar(window)
                 if self.view_stack is not None and self.view_stack.indexOf(window) >= 0:
                     self.view_stack.removeWidget(window)
                 window.setParent(self.iface.mainWindow(), qenum(Qt, "WindowType", "Window"))
                 window.show()
             except Exception:
                 pass
-        if self.view_stack is not None and self._main_central is not None:
-            try:
-                win = self.iface.mainWindow()
-                stack = win.takeCentralWidget()
-                self.view_stack.removeWidget(self._main_central)
-                self._main_central.setParent(win)
-                win.setCentralWidget(self._main_central)
-                if stack is not None:
-                    stack.deleteLater()
-                self.view_stack = None
-            except Exception:
-                pass
-        if self._layout_toolbar_window is not None:
-            self._detach_layout_toolbar()
-        for window in list(self._map_windows.values()):
+        for window in list(self._map_windows.values()):   # ventanas y vistas acopladas
             try:
                 window.close()
             except RuntimeError:
                 pass
         self._map_windows.clear()
+        if self.view_stack is not None and self._main_central is not None:
+            try:
+                win = self.iface.mainWindow()
+                stack = win.takeCentralWidget()
+                self._main_central.setParent(win)
+                win.setCentralWidget(self._main_central)
+                if stack is not None:
+                    stack.deleteLater()
+                self.view_stack = None
+                self._map_page = None
+                self._side_column = None
+            except Exception:
+                pass
+        self._detach_layout_toolbar()
         for signal in self._layer_model_signals:
             try:
                 signal.disconnect(self._on_main_layer_tree_changed)
@@ -423,6 +461,7 @@ class MultiMapPlugin:
             (prj.crsChanged, self._on_project_crs_changed),
             (self.canvas.destinationCrsChanged, self._on_crs_changed),
             (self.canvas.extentsChanged, self._sync_floating_from_main),
+            (self.canvas.extentsChanged, self._on_main_extent_changed),
             (self.iface.projectRead, self._load_state),
             (self.iface.newProjectCreated, self._on_project_new),
         ]
@@ -561,8 +600,9 @@ class MultiMapPlugin:
                 pass
 
     def _persist(self):
-        st = {"v": 6, "active": self.active_id, "maps": self.maps, "stored": self.stored,
-              "view_order": self._view_order or self._current_view_order()}
+        st = {"v": 7, "active": self.active_id, "maps": self.maps, "stored": self.stored,
+              "view_order": self._view_order or self._current_view_order(),
+              "link": self.link_mode, "side": self._side_ids()}
         QgsProject.instance().writeEntry(KEY, "state", json.dumps(st))
 
     def _pick_map(self, title, label, exclude=None, default=None):
@@ -870,6 +910,9 @@ class MultiMapPlugin:
         root = self._root()
         nodes = self._active_nodes()
         self.stored[self.active_id] = self._capture(nodes)
+        m = self._get(self.active_id)
+        if m is not None:
+            m["order"] = self._capture_layer_order()
         layers, seen = [], set()
         for n in nodes:
             for ln in self._layer_nodes(n):
@@ -884,6 +927,30 @@ class MultiMapPlugin:
             self._hide_layer(lyr)
         for n in list(self._active_nodes()):  # grupos que quedaron vacios
             root.removeChildNode(n)
+
+    def _capture_layer_order(self):
+        """Orden de renderizado personalizado (panel Orden de capas) del mapa activo."""
+        root = self._root()
+        try:
+            if not root.hasCustomLayerOrder():
+                return None
+            active = set(l.id() for l in self._active_layers())
+            return {"on": True, "ids": [l.id() for l in root.customLayerOrder()
+                                        if l is not None and l.id() in active]}
+        except Exception:
+            return None
+
+    def _apply_layer_order(self, order):
+        root = self._root()
+        try:
+            if order and order.get("ids"):
+                layers = [QgsProject.instance().mapLayer(i) for i in order["ids"]]
+                root.setCustomLayerOrder([l for l in layers if l is not None])
+                root.setHasCustomLayerOrder(bool(order.get("on")))
+            else:
+                root.setHasCustomLayerOrder(False)
+        except Exception as e:
+            self._log("No se pudo aplicar el orden de capas del mapa: %s" % e)
 
     def _build(self, items, parent):
         """Reconstruye nodos reales a partir de la estructura. Devuelve los ids creados."""
@@ -922,6 +989,8 @@ class MultiMapPlugin:
         root = self._root()
         flats = [c for c in root.children() if self._is_flat(c)]
         built = self._build(items, root)
+        m = self._get(map_id)
+        self._apply_layer_order(m.pop("order", None) if m is not None else None)
         for f in flats:                       # restos de versiones anteriores
             if f.layerId() in built:
                 root.removeChildNode(f)
@@ -1016,57 +1085,28 @@ class MultiMapPlugin:
             return False
 
     def _ensure_layout_toolbar(self):
+        """La fila de pestañas del Layout vive dentro del diseñador: si QGIS la destruyo junto
+        con una ventana de diseñador, se vuelve a crear."""
         if (self._qt_object_alive(getattr(self, "layout_tabbar", None))
-                and self._qt_object_alive(getattr(self, "layout_toolbar", None))
+                and self._qt_object_alive(getattr(self, "_layout_row", None))
                 and self._qt_object_alive(getattr(self, "layout_add_map", None))):
             return
-        old_toolbar = getattr(self, "layout_toolbar", None)
-        old_window = self._layout_toolbar_window
-        if self._qt_object_alive(old_toolbar):
-            try:
-                if self._qt_object_alive(old_window):
-                    old_window.removeToolBar(old_toolbar)
-                old_toolbar.setParent(self.iface.mainWindow())
-                old_toolbar.deleteLater()
-            except RuntimeError:
-                pass
+        self._layout_placer = None
+        self._layout_fallback_tb = None
+        self._layout_strip_window = None
         self._build_layout_toolbar()
-        self._layout_toolbar_window = None
 
     def _build_layout_toolbar(self):
-        """Barra de pestañas para la vista de Layout. Lleva dos separadores (alto y ancho) que
-        se ajustan para que las pestañas queden en el mismo sitio que en la vista de mapas."""
-        win = self.iface.mainWindow()
+        """Fila de pestañas para la vista de Layout. Se coloca pegada encima de la hoja del
+        Layout (dentro del widget central del diseñador), igual que la de mapas encima del
+        lienzo: mismo concepto en las dos vistas y sin ajustes por pixeles."""
         self.layout_tabbar = ProTabBar()
-        self.layout_toolbar = QToolBar("Multimapa", win)
-        self.layout_toolbar.setObjectName("MultiMapLayoutViewToolbar")
-        self.layout_toolbar.setMovable(False)
-        self.layout_toolbar.setFloatable(False)
-        # Oculta de forma explicita: la barra es hija de la ventana principal pero no esta
-        # acoplada a ella. Si QGIS carga el complemento al arrancar (ventana aun sin mostrar),
-        # Qt la mostraria junto con la ventana en la esquina (0,0), tapando el menu
-        # Proyecto/Edicion. Solo se muestra al acoplarla al diseñador de Layout.
-        self.layout_toolbar.hide()
         h = self.layout_tabbar.row_height()
         self.layout_add_map = QToolButton()
         self.layout_add_map.setText("+")
         self.layout_add_map.setToolTip("Nuevo mapa vacío")
         self.layout_add_map.setAutoRaise(True)
         self.layout_add_map.setFixedSize(h + 6, h)
-        host = QWidget()
-        vbox = QVBoxLayout(host)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(0)
-        self._layout_gap = QWidget()
-        self._layout_gap.setFixedHeight(0)
-        vbox.addWidget(self._layout_gap)
-        mid = QWidget()
-        hmid = QHBoxLayout(mid)
-        hmid.setContentsMargins(0, 0, 0, 0)
-        hmid.setSpacing(0)
-        self._layout_xgap = QWidget()
-        self._layout_xgap.setFixedWidth(0)
-        hmid.addWidget(self._layout_xgap)
         row = QWidget()
         row.setObjectName("mmStrip")
         row.setAttribute(qenum(Qt, "WidgetAttribute", "WA_StyledBackground"), True)
@@ -1077,91 +1117,66 @@ class MultiMapPlugin:
         hrow.addWidget(self.layout_tabbar)
         hrow.addWidget(self.layout_add_map)
         hrow.addStretch(1)
-        hmid.addWidget(row, 1)
-        vbox.addWidget(mid)
+        row.hide()
         self._layout_row = row
-        self.layout_toolbar.addWidget(host)
         self._connect_tabbar(self.layout_tabbar)
         self.layout_add_map.clicked.connect(self.add_map)
         colors = self.tabbar.colors
         self.layout_tabbar.apply_colors(colors)
-        self.layout_toolbar.setStyleSheet(
-            "QToolBar#MultiMapLayoutViewToolbar { border: none; padding: 0px; spacing: 0px; margin: 0px; }"
-            + strip_stylesheet(colors))
+        row.setStyleSheet(strip_stylesheet(colors))
         self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
 
-    @staticmethod
-    def _is_layout_toolbar(widget):
+    def _attach_layout_strip(self, window):
+        """Coloca la fila de pestañas encima de la hoja del Layout de 'window'."""
+        self._ensure_layout_toolbar()
+        if self._layout_strip_window is window:
+            self._layout_row.show()
+            return
+        self._detach_layout_toolbar()
         try:
-            return isinstance(widget, QToolBar) and widget.objectName() == "MultiMapLayoutViewToolbar"
-        except RuntimeError:
-            return False
-
-    def _hide_stray_layout_toolbars(self):
-        """Ninguna barra de layout debe quedar visible sobre la ventana principal."""
-        try:
-            win = self.iface.mainWindow()
-            for tb in win.findChildren(QToolBar):
-                if self._is_layout_toolbar(tb) and tb.parent() is win and tb.isVisible():
-                    tb.hide()
-        except RuntimeError:
-            pass
+            host = window.centralWidget()
+            self._layout_placer = StripPlacer(self._layout_row, host, overlap=0)
+        except Exception as e:
+            # Diseñador sin layout en su widget central: la fila va en una barra bajo las demas.
+            self._log("Pestañas del Layout en barra de herramientas (%s)" % e)
+            self._layout_placer = None
+            tb = QToolBar("Multimapa", window)
+            tb.setObjectName("MultiMapLayoutViewToolbar")
+            tb.setMovable(False)
+            tb.setFloatable(False)
+            holder = QWidget()
+            hl = QHBoxLayout(holder)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.addWidget(self._layout_row)
+            tb.addWidget(holder)
+            top = qenum(Qt, "ToolBarArea", "TopToolBarArea")
+            window.addToolBarBreak(top)
+            window.addToolBar(top, tb)
+            self._layout_row.show()
+            tb.show()
+            self._layout_fallback_tb = tb
+        self._layout_strip_window = window
 
     def _detach_layout_toolbar(self, window=None):
-        """Quita la barra del Layout y la deja oculta (nunca suelta sobre la ventana principal)."""
-        window = window or self._layout_toolbar_window
-        tb = getattr(self, "layout_toolbar", None)
+        """Quita la fila de pestañas del diseñador (sin destruirla) y la deja oculta."""
+        if window is not None and window is not self._layout_strip_window:
+            return
+        placer, self._layout_placer = self._layout_placer, None
+        if placer is not None:
+            placer.detach()
+        tb, self._layout_fallback_tb = self._layout_fallback_tb, None
         if tb is not None and self._qt_object_alive(tb):
             try:
-                if window is not None and self._qt_object_alive(window):
-                    window.removeToolBar(tb)
-                tb.hide()
+                if self._qt_object_alive(self._layout_row):
+                    self._layout_row.hide()
+                    self._layout_row.setParent(None)    # sale del contenedor antes de borrar la barra
+                parent = tb.parentWidget()
+                if parent is not None and hasattr(parent, "removeToolBar"):
+                    parent.removeToolBar(tb)
+                tb.deleteLater()
             except RuntimeError:
                 pass
-        if window is None or window is self._layout_toolbar_window:
-            self._layout_toolbar_window = None
-
-    def _map_strip_origin(self):
-        """Posicion (respecto a la ventana principal) de la barra de mapas, mientras es visible."""
-        try:
-            if (self.strip is not None and self.strip.isVisible()
-                    and self.view_stack is not None
-                    and self.view_stack.currentWidget() is self._main_central):
-                pt = self.strip.mapTo(self.iface.mainWindow(), QPoint(0, 0))
-                self._map_strip_pos = (pt.x(), pt.y())
-        except RuntimeError:
-            pass
-
-    def _schedule_align(self, tries_left=12, delay=60):
-        """Una sola cadena de ajustes a la vez (dos en paralelo se pisan y se pasan de largo)."""
-        self._align_gen += 1
-        gen = self._align_gen
-        QTimer.singleShot(delay, lambda: self._align_layout_strip(tries_left, gen))
-
-    def _align_layout_strip(self, tries=12, gen=None):
-        """Iguala la posicion de las pestañas del Layout con la de la vista de mapas."""
-        try:
-            if gen is not None and gen != self._align_gen:
-                return
-            if (self._layout_toolbar_window is None or self._map_strip_pos is None
-                    or not self._qt_object_alive(self.layout_toolbar)):
-                return
-            win = self.iface.mainWindow()
-            cur = self._layout_row.mapTo(win, QPoint(0, 0))
-            dy = self._map_strip_pos[1] - cur.y()
-            dx = self._map_strip_pos[0] - cur.x()
-            if dy == 0 and dx == 0:
-                return
-            gap = max(0, self._layout_gap.height() + dy)
-            xgap = max(0, self._layout_xgap.width() + dx)
-            if gap == self._layout_gap.height() and xgap == self._layout_xgap.width():
-                return      # ya en el limite: el Layout tiene mas barras arriba que la ventana de mapas
-            self._layout_gap.setFixedHeight(gap)
-            self._layout_xgap.setFixedWidth(xgap)
-            if tries > 1:
-                QTimer.singleShot(80, lambda: self._align_layout_strip(tries - 1, gen))
-        except RuntimeError:
-            pass
+        self._layout_strip_window = None
 
     def _tab_id(self, idx, bar=None):
         key = self._tab_key(idx, bar)
@@ -1225,34 +1240,22 @@ class MultiMapPlugin:
     def _show_designer_view(self, designer):
         window = designer.window()
         try:
-            self._ensure_layout_toolbar()
             if self.view_stack.indexOf(window) < 0:
                 window.setParent(self.view_stack)
                 self.view_stack.addWidget(window)
-            self._map_strip_origin()
-            if self._layout_toolbar_window is not window:
-                if self._layout_toolbar_window is not None:
-                    self._detach_layout_toolbar()
-                top = qenum(Qt, "ToolBarArea", "TopToolBarArea")
-                window.addToolBarBreak(top)
-                window.addToolBar(top, self.layout_toolbar)
-                self._layout_toolbar_window = window
-            self.layout_toolbar.show()
+            self._attach_layout_strip(window)
             self._hide_main_chrome()
             self.view_stack.setCurrentWidget(window)
             window.show()
             self._active_designer = designer
-            self._schedule_align(0)
         except RuntimeError:
             pass
 
     def _show_map_view(self, map_id=None):
-        if self.view_stack is not None and self._main_central is not None:
-            self.view_stack.setCurrentWidget(self._main_central)
+        if self.view_stack is not None and self._map_page is not None:
+            self.view_stack.setCurrentWidget(self._map_page)
         self._restore_main_chrome()
         self._active_designer = None
-        QTimer.singleShot(500, self._map_strip_origin)
-        QTimer.singleShot(1500, self._map_strip_origin)
         self.iface.mainWindow().show()
         if map_id and map_id != self.active_id and self._get(map_id) is not None:
             self.activate(map_id)
@@ -1266,7 +1269,7 @@ class MultiMapPlugin:
                        if isinstance(child, (QToolBar, QDockWidget)))
         unique = []
         for widget in widgets:
-            if self._is_layout_toolbar(widget) or widget is self.catalog:
+            if widget is self.catalog:
                 continue
             if widget not in unique:
                 unique.append(widget)
@@ -1283,7 +1286,6 @@ class MultiMapPlugin:
             except RuntimeError:
                 pass
         self._main_chrome_visibility = None
-        self._hide_stray_layout_toolbars()
 
     def _replace_native_new_layout_action(self):
         """Conserva el botón/menu normal de QGIS, pero crea Layout con nombre automático."""
@@ -1458,8 +1460,10 @@ class MultiMapPlugin:
             self.tabbar.apply_colors(colors)
             self.strip.setStyleSheet(strip_stylesheet(colors))
             self.btn_add.setStyleSheet(add_button_stylesheet(colors))
+            self.btn_link.setStyleSheet(add_button_stylesheet(colors))
             self.layout_tabbar.apply_colors(colors)
             self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
+            self._layout_row.setStyleSheet(strip_stylesheet(colors))
         except Exception as e:
             QgsMessageLog.logMessage("No se pudo igualar el color de la barra: %s" % e, "Multimap Layout")
 
@@ -1494,6 +1498,9 @@ class MultiMapPlugin:
                     )
         elif key.startswith("map:"):
             map_id = self._tab_id(idx, target_bar)
+            a_side = menu.addAction("Abrir al lado")
+            a_side.setEnabled(map_id != self.active_id)
+            a_side.triggered.connect(lambda _checked=False, mid=map_id: self.open_side_map(mid))
             screens = QApplication.screens()
             screen_menu = menu.addMenu("Abrir mapa en pantalla")
             for screen_index, screen in enumerate(screens):
@@ -1559,34 +1566,171 @@ class MultiMapPlugin:
                     node = parent.addLayer(layer)
                     node.setItemVisibilityChecked(bool(item.get("on", True)))
 
+    def _view_root(self, map_id):
+        info = self._get(map_id)
+        root = QgsLayerTree()
+        root.setName(info["name"])
+        self._fill_floating_tree(self._map_tree_items(map_id), root)
+        return root
+
     def _open_floating_map(self, map_id, screen_index):
         map_info = self._get(map_id)
         screens = QApplication.screens()
         if map_info is None or not (0 <= screen_index < len(screens)):
             return
         window = self._map_windows.get(map_id)
+        if window is not None and getattr(window, "kind", "window") == "side":
+            window.close()          # pasa de vista acoplada a ventana propia
+            window = None
         if window is not None:
             window.showNormal()
             window.raise_()
             window.activateWindow()
             return
-        root = QgsLayerTree()
-        root.setName(map_info["name"])
-        self._fill_floating_tree(self._map_tree_items(map_id), root)
-        window = MapViewWindow(self, map_info, root, screens[screen_index].availableGeometry())
+        window = MapViewWindow(self, map_info, self._view_root(map_id),
+                               screens[screen_index].availableGeometry())
         self._map_windows[map_id] = window
         window.show()
+
+    def open_side_map(self, map_id, index=-1, persist=True):
+        """Abre el mapa en una vista acoplada a la derecha del lienzo principal (lado a lado)."""
+        map_info = self._get(map_id)
+        if map_info is None or self._side_column is None:
+            return None
+        if map_id == self.active_id:
+            self._warn("«%s» ya se muestra en el lienzo principal. Activa otro mapa para verlos "
+                       "lado a lado." % map_info["name"])
+            return None
+        window = self._map_windows.get(map_id)
+        if window is not None and getattr(window, "kind", "window") == "side":
+            window.canvas.setFocus()
+            return window
+        if window is not None:
+            window.close()          # estaba en ventana propia: se acopla
+        if not self.is_map_open(map_info):
+            map_info["open"] = True
+        view = SideMapView(self, map_info, self._view_root(map_id))
+        self._map_windows[map_id] = view
+        if index < 0 or index > self._side_column.count():
+            self._side_column.addWidget(view)
+        else:
+            self._side_column.insertWidget(index, view)
+        if not self._side_column.isVisible():
+            self._side_column.show()
+            total = max(self._map_page.width(), 400)
+            self._map_page.setSizes([int(total * 0.6), int(total * 0.4)])
+        if self.view_stack is not None and self._map_page is not None:
+            if self.view_stack.currentWidget() is not self._map_page:
+                self.active_view_key = "map:" + str(self.active_id)
+                self._show_map_view()
+        if persist:
+            self._refresh_tabs()
+            self._persist()
+        return view
+
+    def _side_ids(self):
+        if self._side_column is None:
+            return []
+        out = []
+        for i in range(self._side_column.count()):
+            w = self._side_column.widget(i)
+            mid = getattr(w, "map_info", {}).get("id")
+            if mid and self._map_windows.get(mid) is w:
+                out.append(mid)
+        return out
+
+    def swap_side_map(self, map_id):
+        """'Activar' en una vista acoplada: ese mapa pasa al lienzo principal y el que estaba
+        activo ocupa su lugar en la vista acoplada."""
+        prev = self.active_id
+        index = self._side_ids().index(map_id) if map_id in self._side_ids() else -1
+        window = self._map_windows.get(map_id)
+        if window is not None:
+            window.close()
+        if not self.open_map(map_id):
+            self.open_side_map(map_id, index)      # se cancelo: la vista vuelve a su sitio
+            return
+        if prev and prev != map_id:
+            self.open_side_map(prev, index)
+
+    def side_to_window(self, map_id):
+        screen = QApplication.primaryScreen()
+        screens = QApplication.screens()
+        idx = screens.index(screen) if screen in screens else 0
+        self._open_floating_map(map_id, idx)
 
     def _close_floating_map(self, map_id, activate=False):
         window = self._map_windows.get(map_id)
         if window is not None:
             window.close()
         if activate and self._get(map_id) is not None:
-            self.activate(map_id)
+            self.open_map(map_id)
 
     def _on_floating_map_closed(self, map_id, window):
         if self._map_windows.get(map_id) is window:
             self._map_windows.pop(map_id, None)
+        if getattr(window, "kind", "") == "side":
+            QTimer.singleShot(0, self._after_side_closed)
+
+    def _after_side_closed(self):
+        if self._side_column is None or self._unloaded:
+            return
+        if not self._side_ids():
+            self._side_column.hide()
+        if not self._unloaded and not self._loading:
+            self._persist()
+
+    # ------------------------------------------------------ navegacion enlazada
+    def set_link_mode(self, mode):
+        self.link_mode = mode if mode in ("none", "center", "scale") else "none"
+        self._update_link_button()
+        if self.link_mode != "none":
+            self._link_from(self.canvas, force=True)
+        self._persist()
+
+    def _update_link_button(self):
+        btn = getattr(self, "btn_link", None)
+        if btn is None:
+            return
+        texts = {"none": "Vistas sin enlazar", "center": "Vistas enlazadas: centro",
+                 "scale": "Vistas enlazadas: centro y escala"}
+        btn.setToolTip(texts[self.link_mode] + " (clic para cambiar)")
+        btn.setChecked(self.link_mode != "none")
+        for mode, act in getattr(self, "_link_actions", {}).items():
+            act.setChecked(mode == self.link_mode)
+
+    def _on_main_extent_changed(self, *_):
+        self._link_from(self.canvas)
+
+    def _link_from(self, src, force=False):
+        """Lleva el centro (y, segun el modo, la escala) de 'src' a las demas vistas abiertas,
+        transformando entre los CRS de cada mapa."""
+        if self.link_mode == "none" or self._linking:
+            return
+        if not force and (self._busy or self._loading or self._syncing_floating):
+            return
+        self._linking = True
+        try:
+            src_crs = src.mapSettings().destinationCrs()
+            center = src.center()
+            scale = src.scale()
+            targets = [self.canvas] + [w.canvas for w in list(self._map_windows.values())]
+            for c in targets:
+                if c is src:
+                    continue
+                try:
+                    dst = c.mapSettings().destinationCrs()
+                    pt = center
+                    if dst.isValid() and src_crs.isValid() and dst != src_crs:
+                        pt = QgsCoordinateTransform(src_crs, dst, QgsProject.instance()).transform(center)
+                    c.setCenter(pt)
+                    if self.link_mode == "scale" and scale > 0:
+                        c.zoomScale(scale)
+                    c.refresh()
+                except Exception as e:
+                    self._log("No se pudo enlazar una vista: %s" % e)
+        finally:
+            self._linking = False
 
     def _on_floating_tree_changed(self, map_id, root):
         if self._syncing_floating:
@@ -1643,6 +1787,9 @@ class MultiMapPlugin:
         map_info = self._get(map_id)
         if map_info is None:
             return
+        window = self._map_windows.get(map_id)
+        if window is not None:
+            self._link_from(window.canvas)
         map_info["extent"] = self._rect_to_list(extent)
         if map_id == self.active_id and not self._syncing_floating:
             self._syncing_floating = True
@@ -2239,6 +2386,10 @@ class MultiMapPlugin:
             new_struct.append({"t": "l", "id": c.id(), "on": False})
         m = self._new_map(src["name"] + " (copia)", src["crs"], list(src["extent"]))
         m["rot"] = float(src.get("rot", 0.0))
+        order = self._capture_layer_order()
+        if order:
+            m["order"] = {"on": order["on"],
+                          "ids": [idmap[i].id() for i in order["ids"] if i in idmap]}
         self.maps.append(m)
         self.stored[m["id"]] = new_struct
         self._refresh_tabs()
@@ -2643,8 +2794,7 @@ class MultiMapPlugin:
         if self._active_designer is designer:
             self.active_view_key = "map:" + str(self.active_id) if self.active_id else None
             self._show_map_view(self.active_id)
-        if self._layout_toolbar_window is window:
-            self._detach_layout_toolbar(window)
+        self._detach_layout_toolbar(window)
         if self.view_stack is not None:
             try:
                 self.view_stack.removeWidget(window)
@@ -3060,8 +3210,7 @@ class MultiMapPlugin:
 
     def _on_project_new(self, *_):
         self._loading = False
-        if self._layout_toolbar_window is not None:
-            self._detach_layout_toolbar()
+        self._detach_layout_toolbar()
         self.maps = []
         self.stored = {}
         self.active_id = None
@@ -3108,6 +3257,8 @@ class MultiMapPlugin:
         self.stored = {}
         self.active_id = None
         self._view_order = []
+        self.link_mode = "none"
+        self._pending_side = []
         raw, ok = QgsProject.instance().readEntry(KEY, "state", "")
         if ok and raw:
             try:
@@ -3115,6 +3266,8 @@ class MultiMapPlugin:
                 maps = st.get("maps", [])
                 stored = st.get("stored")
                 self._view_order = [str(k) for k in st.get("view_order", []) if isinstance(k, str)]
+                self.link_mode = st.get("link", "none") if st.get("link") in ("none", "center", "scale") else "none"
+                self._pending_side = [str(k) for k in st.get("side", []) if isinstance(k, str)]
                 if maps and isinstance(stored, dict):   # formato v0.5
                     self.maps = maps
                     ids = set(m["id"] for m in maps)
@@ -3144,3 +3297,8 @@ class MultiMapPlugin:
         elif not self._root().children():
             self._ensure_init(persist=False)
         self._refresh_bound_layout_items()
+        self._update_link_button()
+        side, self._pending_side = self._pending_side, []
+        for mid in side:            # vistas acopladas que estaban abiertas al guardar
+            if mid != self.active_id and self._get(mid) is not None:
+                self.open_side_map(mid, persist=False)

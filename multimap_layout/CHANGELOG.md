@@ -1,5 +1,15 @@
 # Cambios
 
+## 1.2.0
+- **Vistas lado a lado:** «Abrir al lado» acopla un mapa a la derecha del lienzo principal dentro de la ventana de QGIS;
+  «Activar» intercambia esa vista con el lienzo principal. Se guardan con el proyecto.
+- **Navegación enlazada** (botón 🔗 en la barra): centro, o centro y escala, entre todas las vistas, con transformación de CRS.
+- Vistas secundarias más completas: iconos de QGIS, extensión completa / anterior / siguiente, identificar en todas las capas
+  visibles (resultados en árbol), medir distancias, escala y coordenadas. La ventana propia permite reordenar el árbol de capas.
+- Vista de Layout: las pestañas quedan pegadas encima de la hoja del Layout (mismo concepto que en mapas). Se eliminan los ajustes
+  por píxeles que intentaban alinear la barra con la de mapas.
+- Orden de renderizado personalizado (panel Orden de capas) por mapa, también al duplicar.
+
 ## 1.1.0
 - Panel **Catálogo** (como en ArcGIS Pro): lista todos los mapas y Layouts del proyecto, abiertos o no. Doble clic abre;
   clic derecho: Abrir, Cerrar vista, Renombrar (F2), Duplicar, Eliminar (Supr), Nuevo mapa / Nuevo Layout. Sigue visible
