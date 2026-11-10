@@ -2093,15 +2093,28 @@ class MultiMapPlugin:
         return path or None
 
     def template_save(self, layout):
-        from qgis.PyQt.QtWidgets import QFileDialog
-        start = os.path.join(templates.user_template_dir(), layout.name() + ".qpt")
-        path, _f = QFileDialog.getSaveFileName(self.iface.mainWindow(), "Guardar como plantilla", start,
-                                               "Plantillas de Layout (*.qpt)")
-        if not path:
+        """Siempre en la carpeta general de plantillas de QGIS: queda disponible en CUALQUIER proyecto
+        (y en el Administrador de diseños de QGIS)."""
+        name, ok = QInputDialog.getText(self.iface.mainWindow(), "Guardar como plantilla",
+                                        "Nombre de la plantilla (disponible en todos los proyectos):",
+                                        text=layout.name())
+        name = name.strip() if ok else ""
+        for ch in '<>:"/\\|?*':
+            name = name.replace(ch, "_")
+        if not name:
             return
+        path = os.path.join(templates.user_template_dir(), name + ".qpt")
+        if os.path.exists(path):
+            resp = QMessageBox.question(
+                self.iface.mainWindow(), "Guardar como plantilla",
+                "Ya existe la plantilla «%s». ¿Reemplazarla?" % name,
+                qenum(QMessageBox, "StandardButton", "Yes") | qenum(QMessageBox, "StandardButton", "No"),
+            )
+            if resp != qenum(QMessageBox, "StandardButton", "Yes"):
+                return
         try:
-            path = templates.save_template(layout, path)
-            self._ok("Plantilla guardada: %s" % os.path.basename(path))
+            templates.save_template(layout, path)
+            self._ok("Plantilla «%s» guardada; ya está disponible en todos los proyectos." % name)
         except Exception as e:
             self._warn("No se pudo guardar la plantilla: %s" % e)
 

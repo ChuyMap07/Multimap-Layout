@@ -1,5 +1,9 @@
 # Cambios
 
+## 1.3.1
+- «Guardar como plantilla» pide solo el nombre y guarda siempre en la carpeta general de plantillas de QGIS: la plantilla queda
+  disponible en cualquier proyecto (avisa antes de reemplazar una existente). Ya no se leen plantillas de la carpeta del proyecto.
+
 ## 1.3.0
 - Botón **Plantillas** en la barra de pestañas del Layout (y en el Catálogo): guardar como plantilla, nuevo Layout desde
   plantilla, reemplazar con plantilla y abrir la carpeta de plantillas. Comparte la carpeta con el Administrador de diseños de QGIS.

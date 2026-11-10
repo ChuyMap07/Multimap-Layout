@@ -1,4 +1,4 @@
-# Multimap Layout 1.3.0
+# Multimap Layout 1.3.1
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
 Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Probado en 3.34 y 4.2.
@@ -56,8 +56,9 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
 - Los elementos enlazados se actualizan solos cuando cambia la composición de capas de su mapa. La extensión del marco queda libre.
 - Complementos > Multimap Layout > Crear layout con todos los mapas; Layout > Asignar mapa… para reasignar.
 - **Plantillas** (botón en la barra de pestañas del Layout y en el Catálogo > Layouts): guardar el Layout como plantilla,
-  crear un Layout desde una plantilla y reemplazar el contenido del Layout con una plantilla. Usa la carpeta de plantillas de
-  QGIS (perfil > composer_templates), las rutas de búsqueda de QGIS y la carpeta `plantillas` junto al proyecto. Los elementos
+  crear un Layout desde una plantilla y reemplazar el contenido del Layout con una plantilla. Las plantillas se guardan
+  siempre en la carpeta general de QGIS (perfil > composer_templates), así que están disponibles en **cualquier proyecto** (y en
+  el Administrador de diseños de QGIS). También se leen las rutas de búsqueda de plantillas configuradas en QGIS. Los elementos
   que venían enlazados a mapas de otro proyecto se sueltan y el complemento ofrece enlazarlos a los mapas de este.
 
 ## Archivos de proyecto

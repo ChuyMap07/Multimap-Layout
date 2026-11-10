@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Plantillas de Layout (.qpt) a mano desde la barra de pestañas del Layout.
 
-Usa la misma carpeta de plantillas de QGIS (perfil de usuario > composer_templates, mas las rutas
-de busqueda configuradas en QGIS), de modo que lo que se guarda aqui aparece tambien en el
-Administrador de diseños de QGIS y viceversa."""
+Las plantillas se guardan SIEMPRE en la carpeta general de QGIS (perfil de usuario >
+composer_templates), no junto al proyecto: asi estan disponibles en cualquier proyecto y tambien en el
+Administrador de diseños de QGIS. Se leen ademas las rutas de busqueda configuradas en QGIS."""
 import os
 
 from qgis.PyQt.QtCore import QFile, QIODevice, QUrl
@@ -27,9 +27,6 @@ def template_dirs():
         dirs.extend(str(d) for d in extra or [])
     except Exception:
         pass
-    project_dir = QgsProject.instance().homePath()
-    if project_dir:
-        dirs.append(os.path.join(project_dir, "plantillas"))
     out = []
     for d in dirs:
         if d and os.path.isdir(d) and os.path.normcase(os.path.abspath(d)) not in [
