@@ -1,5 +1,12 @@
 # Cambios
 
+## 1.4.0
+- Vista de Layout: las pestañas quedan en el **mismo lugar** que en la vista de mapas (se realinean si cambia el ancho de los
+  paneles). El espacio de la izquierda lo ocupan las herramientas de plantillas: Guardar, Nueva y Aplicar.
+- Botones visibles en la barra: **Lado a lado** (ver otro mapa junto al lienzo), **Enlazar** y **Catálogo**. El Catálogo
+  también se puede abrir desde la barra de Complementos.
+- Pruebas de interfaz (posición de pestañas, botones) en `tests/test_ui.py`.
+
 ## 1.3.2
 - Corrige pérdida de datos: las **relaciones** entre capas y las capas de los **temas de mapa** se borraban al cambiar de pestaña
   (QGIS las elimina al sacar capas del registro). Ahora se conservan y se reponen, también al guardar y abrir el proyecto.

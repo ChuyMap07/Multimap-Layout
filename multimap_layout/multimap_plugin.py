@@ -45,6 +45,7 @@ from qgis.PyQt.QtWidgets import (
     QDockWidget,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -52,6 +53,7 @@ from qgis.PyQt.QtWidgets import (
     QStackedWidget,
     QToolBar,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -193,9 +195,8 @@ class MultiMapPlugin:
         self._legacy_noted = set()      # layouts a los que ya se ofrecio enlazar elementos sueltos
         self._unloaded = False
         self._active_designer = None
-        self._layout_strip_window = None   # diseñador que tiene ahora la fila de pestañas
-        self._layout_placer = None
-        self._layout_fallback_tb = None
+        self._layout_strip_window = None   # diseñador que tiene ahora la barra de pestañas
+        self._map_strip_pos = None         # donde estan las pestañas en la vista de mapas
         self._map_page = None              # splitter: lienzo principal | vistas acopladas
         self._side_column = None
         self.link_mode = "none"            # navegacion enlazada: none | center | scale
@@ -246,12 +247,8 @@ class MultiMapPlugin:
         lay.addWidget(self.btn_add)
         lay.addStretch(1)
         # Navegacion enlazada entre el lienzo principal y las vistas acopladas / en ventana.
-        self.btn_link = QToolButton()
-        self.btn_link.setText("\U0001F517")
+        self.btn_link = self._text_button("Enlazar", "Navegación enlazada entre vistas", h, colors)
         self.btn_link.setCheckable(True)
-        self.btn_link.setAutoRaise(True)
-        self.btn_link.setFixedSize(h + 10, h)
-        self.btn_link.setStyleSheet(add_button_stylesheet(colors))
         link_menu = QMenu(self.btn_link)
         self._link_actions = {}
         for mode, text in (("none", "Sin enlazar"), ("center", "Enlazar centro"),
@@ -261,11 +258,20 @@ class MultiMapPlugin:
             act.triggered.connect(lambda _c=False, m=mode: self.set_link_mode(m))
             self._link_actions[mode] = act
         self.btn_link.setMenu(link_menu)
-        self.btn_link.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "MenuButtonPopup"))
-        self.btn_link.clicked.connect(
-            lambda *_: self.set_link_mode("none" if self.link_mode != "none" else "scale"))
+        self.btn_link.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
         lay.addWidget(self.btn_link)
         self._update_link_button()
+        # Ver dos (o mas) mapas a la vez: el mapa elegido se acopla a la derecha del lienzo.
+        self.btn_side = self._text_button("Lado a lado", "Ver otro mapa al lado del lienzo principal", h, colors)
+        side_menu = QMenu(self.btn_side)
+        side_menu.aboutToShow.connect(lambda m=side_menu: self._fill_side_menu(m))
+        self.btn_side.setMenu(side_menu)
+        self.btn_side.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
+        lay.insertWidget(lay.indexOf(self.btn_link), self.btn_side)
+        self.btn_catalog = self._text_button("Catálogo", "Mostrar u ocultar el panel Catálogo", h, colors)
+        self.btn_catalog.setCheckable(True)
+        self.btn_catalog.clicked.connect(lambda *_: self.toggle_catalog())
+        lay.addWidget(self.btn_catalog)
 
         self.strip = w
         self.placer = None
@@ -323,6 +329,10 @@ class MultiMapPlugin:
         self.act_catalog = self.catalog.toggleViewAction()
         self.act_catalog.setIcon(icon)
         self.act_catalog.setText("Catálogo de mapas y Layouts")
+        self.act_catalog.setToolTip("Catálogo de mapas y Layouts (Multimap)")
+        self.iface.addToolBarIcon(self.act_catalog)        # tambien en la barra de Complementos
+        self.catalog.visibilityChanged.connect(lambda *_: self._sync_catalog_buttons())
+        self._sync_catalog_buttons()
         manager = QgsProject.instance().layoutManager()
         for sig, slot in ((manager.layoutAdded, lambda *_: self._refresh_catalog()),
                           (manager.layoutRemoved, self._on_layout_removed),
@@ -511,6 +521,10 @@ class MultiMapPlugin:
             except Exception:
                 pass
         self._catalog_slots = []
+        try:
+            self.iface.removeToolBarIcon(self.act_catalog)
+        except Exception:
+            pass
         if self.catalog is not None:
             try:
                 self.iface.removeDockWidget(self.catalog)
@@ -1224,108 +1238,253 @@ class MultiMapPlugin:
         except RuntimeError:
             return False
 
-    def _ensure_layout_toolbar(self):
-        """La fila de pestañas del Layout vive dentro del diseñador: si QGIS la destruyo junto
-        con una ventana de diseñador, se vuelve a crear."""
-        if (self._qt_object_alive(getattr(self, "layout_tabbar", None))
-                and self._qt_object_alive(getattr(self, "_layout_row", None))
-                and self._qt_object_alive(getattr(self, "layout_add_map", None))):
+    @staticmethod
+    def _text_button(text, tip, h, colors, icon=None):
+        b = QToolButton()
+        b.setText(text)
+        if icon:
+            try:
+                from qgis.core import QgsApplication
+                b.setIcon(QgsApplication.getThemeIcon(icon))
+                b.setIconSize(QSize(h - 8, h - 8))
+                b.setToolButtonStyle(qenum(Qt, "ToolButtonStyle", "ToolButtonTextBesideIcon"))
+            except Exception:
+                pass
+        b.setToolTip(tip)
+        b.setAutoRaise(True)
+        b.setFixedHeight(h)
+        b.setStyleSheet(add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
+        return b
+
+    def toggle_catalog(self):
+        if self.catalog is None:
             return
-        self._layout_placer = None
-        self._layout_fallback_tb = None
+        show = not self.catalog.isVisible()
+        self.catalog.setVisible(show)
+        if show:
+            self.catalog.raise_()
+        self._sync_catalog_buttons()
+
+    def _sync_catalog_buttons(self):
+        visible = self.catalog is not None and self._qt_object_alive(self.catalog) and self.catalog.isVisible()
+        for name in ("btn_catalog", "layout_catalog"):
+            b = getattr(self, name, None)
+            if b is not None and self._qt_object_alive(b):
+                b.setChecked(visible)
+
+    def _fill_side_menu(self, menu):
+        menu.clear()
+        others = [m for m in self.maps if m["id"] != self.active_id]
+        if not others:
+            a = menu.addAction("Crea otro mapa con «+» para verlo al lado")
+            a.setEnabled(False)
+        side = self._side_ids()
+        for m in others:
+            a = menu.addAction(m["name"])
+            a.setCheckable(True)
+            a.setChecked(m["id"] in side)
+            a.triggered.connect(lambda checked, mid=m["id"]:
+                                self.open_side_map(mid) if checked else self._close_floating_map(mid))
+        if side:
+            menu.addSeparator()
+            menu.addAction("Cerrar todas las vistas al lado").triggered.connect(
+                lambda *_: [self._close_floating_map(mid) for mid in self._side_ids()])
+
+    def _ensure_layout_toolbar(self):
+        """La barra del Layout vive dentro del diseñador: si QGIS la destruyo junto con una
+        ventana de diseñador, se vuelve a crear."""
+        if all(self._qt_object_alive(getattr(self, n, None))
+               for n in ("layout_toolbar", "layout_tabbar", "_layout_row", "layout_add_map")):
+            return
         self._layout_strip_window = None
         self._build_layout_toolbar()
 
     def _build_layout_toolbar(self):
-        """Fila de pestañas para la vista de Layout. Se coloca pegada encima de la hoja del
-        Layout (dentro del widget central del diseñador), igual que la de mapas encima del
-        lienzo: mismo concepto en las dos vistas y sin ajustes por pixeles."""
+        """Barra de pestañas de la vista de Layout: una fila debajo de las herramientas del
+        diseñador. A la izquierda va un hueco con las herramientas de plantillas, cuyo ancho se
+        ajusta para que las pestañas queden en el MISMO lugar que en la vista de mapas."""
+        colors = self.tabbar.colors
         self.layout_tabbar = ProTabBar()
         h = self.layout_tabbar.row_height()
+        # Sin padre y oculta: no puede aparecer suelta sobre la ventana principal.
+        self.layout_toolbar = QToolBar("Multimapa")
+        self.layout_toolbar.setObjectName("MultiMapLayoutViewToolbar")
+        self.layout_toolbar.setMovable(False)
+        self.layout_toolbar.setFloatable(False)
+        self.layout_toolbar.hide()
         self.layout_add_map = QToolButton()
         self.layout_add_map.setText("+")
         self.layout_add_map.setToolTip("Nuevo mapa vacío")
         self.layout_add_map.setAutoRaise(True)
         self.layout_add_map.setFixedSize(h + 6, h)
+
+        host = QWidget()
+        host.setObjectName("mmStrip")
+        host.setAttribute(qenum(Qt, "WidgetAttribute", "WA_StyledBackground"), True)
+        vbox = QVBoxLayout(host)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+        self._layout_vgap = QWidget()
+        self._layout_vgap.setFixedHeight(0)
+        vbox.addWidget(self._layout_vgap)
+        line = QWidget()
+        hl = QHBoxLayout(line)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
+
+        # Hueco izquierdo = herramientas de plantillas (completas si caben, si no un menu).
+        self._layout_filler = QWidget()
+        fl = QHBoxLayout(self._layout_filler)
+        fl.setContentsMargins(4, 0, 4, 0)
+        fl.setSpacing(2)
+        self._tpl_full = QWidget()
+        tf = QHBoxLayout(self._tpl_full)
+        tf.setContentsMargins(0, 0, 0, 0)
+        tf.setSpacing(2)
+        lbl = QLabel("Plantillas:")
+        lbl.setContentsMargins(2, 0, 4, 0)
+        tf.addWidget(lbl)
+        self._tpl_label = lbl
+        b_save = self._text_button("Guardar", "Guardar este Layout como plantilla (disponible en todos los proyectos)",
+                                   h, colors, "/mActionFileSave.svg")
+        b_save.clicked.connect(lambda *_: self._current_layout() and self.template_save(self._current_layout()))
+        b_new = self._text_button("Nueva", "Crear un Layout nuevo desde una plantilla", h, colors,
+                                  "/mActionNewLayout.svg")
+        m_new = QMenu(b_new)
+        m_new.aboutToShow.connect(lambda m=m_new: self._fill_template_list(m, "new"))
+        b_new.setMenu(m_new)
+        b_new.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
+        b_rep = self._text_button("Aplicar", "Reemplazar el contenido de este Layout con una plantilla",
+                                  h, colors, "/mActionFileOpen.svg")
+        m_rep = QMenu(b_rep)
+        m_rep.aboutToShow.connect(lambda m=m_rep: self._fill_template_list(m, "apply"))
+        b_rep.setMenu(m_rep)
+        b_rep.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
+        for b in (b_save, b_new, b_rep):
+            tf.addWidget(b)
+        self._tpl_buttons = [b_save, b_new, b_rep]
+        self.layout_templates = self._text_button("Plantillas \u25be", "Plantillas de Layout", h, colors)
+        tmenu = QMenu(self.layout_templates)
+        tmenu.aboutToShow.connect(lambda m=tmenu: self._fill_template_menu(m, current=True))
+        self.layout_templates.setMenu(tmenu)
+        self.layout_templates.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
+        fl.addWidget(self._tpl_full)
+        fl.addWidget(self.layout_templates)
+        fl.addStretch(1)
+        self.layout_templates.hide()
+        hl.addWidget(self._layout_filler)
+
         row = QWidget()
-        row.setObjectName("mmStrip")
-        row.setAttribute(qenum(Qt, "WidgetAttribute", "WA_StyledBackground"), True)
-        row.setFixedHeight(h)
         hrow = QHBoxLayout(row)
         hrow.setContentsMargins(0, 0, 0, 0)
         hrow.setSpacing(0)
         hrow.addWidget(self.layout_tabbar)
         hrow.addWidget(self.layout_add_map)
         hrow.addStretch(1)
-        # Plantillas (.qpt): guardar, crear y reemplazar sin buscar en los menus del diseñador.
-        self.layout_templates = QToolButton()
-        self.layout_templates.setText("Plantillas")
-        self.layout_templates.setToolTip("Plantillas de Layout: guardar, crear desde plantilla, reemplazar")
-        self.layout_templates.setAutoRaise(True)
-        self.layout_templates.setFixedHeight(h)
-        tmenu = QMenu(self.layout_templates)
-        tmenu.aboutToShow.connect(lambda m=tmenu: self._fill_template_menu(m, current=True))
-        self.layout_templates.setMenu(tmenu)
-        self.layout_templates.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
-        hrow.addWidget(self.layout_templates)
-        row.hide()
+        self.layout_catalog = self._text_button("Catálogo", "Mostrar u ocultar el panel Catálogo", h, colors)
+        self.layout_catalog.setCheckable(True)
+        self.layout_catalog.clicked.connect(lambda *_: self.toggle_catalog())
+        hrow.addWidget(self.layout_catalog)
+        hl.addWidget(row, 1)
+        vbox.addWidget(line)
         self._layout_row = row
+        self.layout_toolbar.addWidget(host)
+        self._layout_host = host
+
         self._connect_tabbar(self.layout_tabbar)
         self.layout_add_map.clicked.connect(self.add_map)
-        colors = self.tabbar.colors
         self.layout_tabbar.apply_colors(colors)
-        row.setStyleSheet(strip_stylesheet(colors))
+        self.layout_toolbar.setStyleSheet(
+            "QToolBar#MultiMapLayoutViewToolbar { border: none; padding: 0px; spacing: 0px; margin: 0px; }"
+            + strip_stylesheet(colors))
         self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
-        self.layout_templates.setStyleSheet(add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
+        self._set_filler_width(self._tpl_full.sizeHint().width() + 8)
+        self._sync_catalog_buttons()
+
+    def _set_filler_width(self, width):
+        """Ancho del hueco izquierdo; muestra las plantillas completas si caben, si no un menu."""
+        full = self._tpl_full.sizeHint().width() + 8
+        compact = self.layout_templates.sizeHint().width() + 8
+        width = max(int(width), compact)
+        self._tpl_full.setVisible(width >= full)
+        self.layout_templates.setVisible(width < full)
+        self._layout_filler.setFixedWidth(width)
+
+    def _fill_template_list(self, menu, mode):
+        menu.clear()
+        layout = self._current_layout()
+        found = templates.list_templates()
+        for name, path in found:
+            if mode == "new":
+                menu.addAction(name).triggered.connect(lambda _c=False, p=path: self.template_new(p))
+            elif layout is not None:
+                menu.addAction(name).triggered.connect(lambda _c=False, p=path: self.template_apply(layout, p))
+        if not found:
+            a = menu.addAction("(todavía no hay plantillas guardadas)")
+            a.setEnabled(False)
+        menu.addSeparator()
+        if mode == "new":
+            menu.addAction("Otro archivo…").triggered.connect(lambda *_: self.template_new(None))
+        elif layout is not None:
+            menu.addAction("Otro archivo…").triggered.connect(lambda *_: self.template_apply(layout, None))
+        menu.addAction("Abrir carpeta de plantillas").triggered.connect(lambda *_: templates.open_folder())
+
+    def _capture_map_strip_pos(self):
+        """Posicion (en la ventana principal) de las pestañas en la vista de mapas."""
+        try:
+            if (self.view_stack is not None and self.view_stack.currentWidget() is self._map_page
+                    and self.strip.isVisible()):
+                pt = self.tabbar.mapTo(self.iface.mainWindow(), QPoint(0, 0))
+                self._map_strip_pos = (pt.x(), pt.y())
+        except RuntimeError:
+            pass
+
+    def _align_layout_bar(self, tries=4):
+        """Iguala la posicion de las pestañas del Layout con la de la vista de mapas: el hueco
+        izquierdo (plantillas) absorbe la diferencia horizontal y un separador la vertical."""
+        try:
+            if self._layout_strip_window is None or not self._layout_row.isVisible():
+                return
+            win = self.iface.mainWindow()
+            if self._map_strip_pos is None:
+                return
+            cur = self.layout_tabbar.mapTo(win, QPoint(0, 0))
+            dx = self._map_strip_pos[0] - cur.x()
+            dy = self._map_strip_pos[1] - cur.y()
+            if dx:
+                self._set_filler_width(self._layout_filler.width() + dx)
+            if dy:
+                self._layout_vgap.setFixedHeight(max(0, self._layout_vgap.height() + dy))
+            if (dx or dy) and tries > 1:
+                QTimer.singleShot(40, lambda: self._align_layout_bar(tries - 1))
+        except RuntimeError:
+            pass
 
     def _attach_layout_strip(self, window):
-        """Coloca la fila de pestañas encima de la hoja del Layout de 'window'."""
+        """Pone la barra de pestañas del Layout en 'window' (debajo de sus herramientas)."""
         self._ensure_layout_toolbar()
-        if self._layout_strip_window is window:
-            self._layout_row.show()
-            return
-        self._detach_layout_toolbar()
-        try:
-            host = window.centralWidget()
-            self._layout_placer = StripPlacer(self._layout_row, host, overlap=0)
-        except Exception as e:
-            # Diseñador sin layout en su widget central: la fila va en una barra bajo las demas.
-            self._log("Pestañas del Layout en barra de herramientas (%s)" % e)
-            self._layout_placer = None
-            tb = QToolBar("Multimapa", window)
-            tb.setObjectName("MultiMapLayoutViewToolbar")
-            tb.setMovable(False)
-            tb.setFloatable(False)
-            holder = QWidget()
-            hl = QHBoxLayout(holder)
-            hl.setContentsMargins(0, 0, 0, 0)
-            hl.addWidget(self._layout_row)
-            tb.addWidget(holder)
+        if self._layout_strip_window is not window:
+            self._detach_layout_toolbar()
             top = qenum(Qt, "ToolBarArea", "TopToolBarArea")
             window.addToolBarBreak(top)
-            window.addToolBar(top, tb)
-            self._layout_row.show()
-            tb.show()
-            self._layout_fallback_tb = tb
-        self._layout_strip_window = window
+            window.addToolBar(top, self.layout_toolbar)
+            self._layout_strip_window = window
+        self.layout_toolbar.show()
+        self._layout_host.show()
+        QTimer.singleShot(0, self._align_layout_bar)
 
     def _detach_layout_toolbar(self, window=None):
-        """Quita la fila de pestañas del diseñador (sin destruirla) y la deja oculta."""
+        """Quita la barra del diseñador y la deja oculta (nunca suelta sobre la ventana principal)."""
         if window is not None and window is not self._layout_strip_window:
             return
-        placer, self._layout_placer = self._layout_placer, None
-        if placer is not None:
-            placer.detach()
-        tb, self._layout_fallback_tb = self._layout_fallback_tb, None
+        tb = getattr(self, "layout_toolbar", None)
+        old = self._layout_strip_window
         if tb is not None and self._qt_object_alive(tb):
             try:
-                if self._qt_object_alive(self._layout_row):
-                    self._layout_row.hide()
-                    self._layout_row.setParent(None)    # sale del contenedor antes de borrar la barra
-                parent = tb.parentWidget()
-                if parent is not None and hasattr(parent, "removeToolBar"):
-                    parent.removeToolBar(tb)
-                tb.deleteLater()
+                if old is not None and self._qt_object_alive(old):
+                    old.removeToolBar(tb)
+                tb.hide()
+                tb.setParent(None)
             except RuntimeError:
                 pass
         self._layout_strip_window = None
@@ -1392,6 +1551,7 @@ class MultiMapPlugin:
     def _show_designer_view(self, designer):
         window = designer.window()
         try:
+            self._capture_map_strip_pos()
             if self.view_stack.indexOf(window) < 0:
                 window.setParent(self.view_stack)
                 self.view_stack.addWidget(window)
@@ -1409,6 +1569,7 @@ class MultiMapPlugin:
         self._restore_main_chrome()
         self._active_designer = None
         self.iface.mainWindow().show()
+        QTimer.singleShot(0, self._capture_map_strip_pos)
         if map_id and map_id != self.active_id and self._get(map_id) is not None:
             self.activate(map_id)
 
@@ -1612,12 +1773,15 @@ class MultiMapPlugin:
             self.tabbar.apply_colors(colors)
             self.strip.setStyleSheet(strip_stylesheet(colors))
             self.btn_add.setStyleSheet(add_button_stylesheet(colors))
-            self.btn_link.setStyleSheet(add_button_stylesheet(colors))
+            self.btn_link.setStyleSheet(add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
             self.layout_tabbar.apply_colors(colors)
             self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
-            self._layout_row.setStyleSheet(strip_stylesheet(colors))
-            self.layout_templates.setStyleSheet(
-                add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
+            self.layout_toolbar.setStyleSheet(
+                "QToolBar#MultiMapLayoutViewToolbar { border: none; padding: 0px; spacing: 0px; margin: 0px; }"
+                + strip_stylesheet(colors))
+            tb_style = add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;")
+            for b in self._tpl_buttons + [self.layout_templates, self.layout_catalog, self.btn_side, self.btn_catalog]:
+                b.setStyleSheet(tb_style)
         except Exception as e:
             QgsMessageLog.logMessage("No se pudo igualar el color de la barra: %s" % e, "Multimap Layout")
 
@@ -1848,7 +2012,7 @@ class MultiMapPlugin:
             return
         texts = {"none": "Vistas sin enlazar", "center": "Vistas enlazadas: centro",
                  "scale": "Vistas enlazadas: centro y escala"}
-        btn.setToolTip(texts[self.link_mode] + " (clic para cambiar)")
+        btn.setToolTip(texts[self.link_mode])
         btn.setChecked(self.link_mode != "none")
         for mode, act in getattr(self, "_link_actions", {}).items():
             act.setChecked(mode == self.link_mode)

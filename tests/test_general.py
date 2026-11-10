@@ -192,8 +192,8 @@ def run():
         pump(30)
         check("nuevo Layout crea pestana", any(p._tab_key(i).startswith("layout:") for i in range(p.tabbar.count())))
         check("el disenador queda integrado", p._active_designer is not None and p.view_stack.currentWidget() is p._active_designer.window())
-        check("pestanas del Layout encima de la hoja (no barra de respaldo)",
-              p._layout_placer is not None, "respaldo" if p._layout_fallback_tb else "")
+        check("barra de pestanas del Layout acoplada al disenador",
+              p._layout_strip_window is p._active_designer.window())
         row = p._layout_row
         check("pestanas del Layout visibles", row.isVisible())
         try:

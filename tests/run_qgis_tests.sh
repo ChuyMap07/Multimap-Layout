@@ -9,7 +9,7 @@ PLUG="$TMP/profiles/profiles/default/python/plugins"
 mkdir -p "$PLUG" "$TMP/work"
 ln -s "$HERE/../multimap_layout" "$PLUG/multimap_layout"
 status=0
-for t in test_general test_compat test_edge; do
+for t in test_general test_compat test_edge test_ui; do
   echo "== $t"
   MM_OUT="$TMP/$t.txt" MM_WORK="$TMP/work" timeout 300 xvfb-run -a -s "-screen 0 1600x1000x24" \
     qgis --profiles-path "$TMP/profiles" --nologo --noversioncheck --code "$HERE/$t.py" > "$TMP/$t.log" 2>&1

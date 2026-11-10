@@ -1,4 +1,4 @@
-# Multimap Layout 1.3.2
+# Multimap Layout 1.4.0
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
 Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Pruebas automáticas en QGIS 3.34 (ver `tests/`).
@@ -15,16 +15,18 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
 - Aspecto de ArcGIS Pro, con la pestaña activa en verde; incluye mapas y Layouts abiertos. Doble clic renombra; arrastra para
   reordenar; la X aparece en la pestaña activa y al pasar el cursor.
 - "+" crea un mapa vacío. Los Layouts aparecen como pestaña al crearlos con el botón normal de QGIS.
-- Al elegir un Layout, el diseñador se integra en la ventana principal y las pestañas quedan pegadas encima de la hoja del
-  Layout, igual que en la vista de mapas quedan encima del lienzo. Elegir un mapa vuelve al lienzo principal.
+- Al elegir un Layout, el diseñador se integra en la ventana principal y las pestañas quedan **en el mismo lugar** que en la
+  vista de mapas. El espacio a su izquierda lo ocupan las herramientas de plantillas (Guardar / Nueva / Aplicar). Elegir un mapa
+  vuelve al lienzo principal.
+- Botones a la derecha de la barra: **Lado a lado** (elige qué mapa ver junto al lienzo), **Enlazar** (navegación enlazada) y
+  **Catálogo** (muestra u oculta el panel). El Catálogo también está en la barra de Complementos y en el menú del complemento.
 - Clic derecho: renombrar y cerrar; en mapas también duplicar, abrir al lado y abrir en otra pantalla. Se pueden arrastrar
   pestañas fuera de la barra para abrir mapas en ventana propia o mover Layouts a otro monitor.
-- Botón de enlace (🔗) a la derecha de la barra: navegación enlazada entre el lienzo principal, las vistas acopladas y las
-  ventanas. Clic lo activa o desactiva; la flecha elige el modo: *Enlazar centro* o *Enlazar centro y escala*. El centro se
-  transforma entre los CRS de cada mapa.
+- **Enlazar**: navegación enlazada entre el lienzo principal, las vistas lado a lado y las ventanas: *Sin enlazar*, *Enlazar
+  centro* o *Enlazar centro y escala*. El centro se transforma entre los CRS de cada mapa.
 
 ## Vistas lado a lado
-- Pestaña o Catálogo > clic derecho > **Abrir al lado**: el mapa se acopla a la derecha del lienzo principal, dentro de la
+- Botón **Lado a lado** de la barra (o pestaña / Catálogo > clic derecho > **Abrir al lado**): el mapa se acopla a la derecha del lienzo principal, dentro de la
   ventana de QGIS. Se pueden acoplar varios (se apilan) y ajustar el tamaño con los divisores.
 - Cada vista acoplada tiene navegación, extensión completa / anterior / siguiente, identificar, medir, escala y coordenadas.
 - **Activar** en su cabecera intercambia: ese mapa pasa al lienzo principal (con todas las herramientas de QGIS y edición) y el
@@ -55,7 +57,7 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
   nuevas siguen al mapa de su elemento de referencia. "Sin enlazar" conserva el comportamiento normal de QGIS.
 - Los elementos enlazados se actualizan solos cuando cambia la composición de capas de su mapa. La extensión del marco queda libre.
 - Complementos > Multimap Layout > Crear layout con todos los mapas; Layout > Asignar mapa… para reasignar.
-- **Plantillas** (botón en la barra de pestañas del Layout y en el Catálogo > Layouts): guardar el Layout como plantilla,
+- **Plantillas** (a la izquierda de las pestañas en la vista de Layout, y en el Catálogo > Layouts): guardar el Layout como plantilla,
   crear un Layout desde una plantilla y reemplazar el contenido del Layout con una plantilla. Las plantillas se guardan
   siempre en la carpeta general de QGIS (perfil > composer_templates), así que están disponibles en **cualquier proyecto** (y en
   el Administrador de diseños de QGIS). También se leen las rutas de búsqueda de plantillas configuradas en QGIS. Los elementos
