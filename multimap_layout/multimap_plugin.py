@@ -60,6 +60,7 @@ try:
 except ImportError:  # PyQt5 sin shim
     from qgis.PyQt.QtWidgets import QAction
 
+from .catalog import CatalogDock
 from .common import FLAT, KEY, NONE, PROP, SKIP, qenum
 from .dialogs import LayoutDialog, TabNameEdit
 from .map_window import MapViewWindow
@@ -202,6 +203,8 @@ class MultiMapPlugin:
         self._native_new_layout_enabled = None
         self._new_layout_proxy = None
         self._new_layout_action_hosts = []
+        self.catalog = None
+        self._catalog_slots = []
 
     # ------------------------------------------------------------------ GUI
     def initGui(self):
@@ -273,7 +276,18 @@ class MultiMapPlugin:
         self.act_dup.triggered.connect(self.duplicate_map)
         self.act_layout.triggered.connect(self.create_layout)
         self.act_assign.triggered.connect(self.assign_map_to_layout_items)
-        self.menu_actions = [self.act_add, self.act_dup, self.act_layout, self.act_assign]
+        self.catalog = CatalogDock(self, win)
+        self.iface.addDockWidget(qenum(Qt, "DockWidgetArea", "RightDockWidgetArea"), self.catalog)
+        self.act_catalog = self.catalog.toggleViewAction()
+        self.act_catalog.setIcon(icon)
+        self.act_catalog.setText("Catálogo de mapas y Layouts")
+        manager = QgsProject.instance().layoutManager()
+        for sig, slot in ((manager.layoutAdded, lambda *_: self._refresh_catalog()),
+                          (manager.layoutRemoved, self._on_layout_removed),
+                          (manager.layoutRenamed, lambda *_: self._refresh_catalog())):
+            sig.connect(slot)
+            self._catalog_slots.append((sig, slot))
+        self.menu_actions = [self.act_add, self.act_dup, self.act_layout, self.act_assign, self.act_catalog]
         for a in self.menu_actions:
             self.iface.addPluginToMenu(self.MENU, a)
 
@@ -448,6 +462,19 @@ class MultiMapPlugin:
             self.iface.removeDockWidget(self.dock)
             self.dock.deleteLater()
             self.dock = None
+        for sig, slot in self._catalog_slots:
+            try:
+                sig.disconnect(slot)
+            except Exception:
+                pass
+        self._catalog_slots = []
+        if self.catalog is not None:
+            try:
+                self.iface.removeDockWidget(self.catalog)
+                self.catalog.deleteLater()
+            except RuntimeError:
+                pass
+            self.catalog = None
 
     # -------------------------------------------------------------- helpers
     def _root(self):
@@ -478,7 +505,40 @@ class MultiMapPlugin:
         return [r.xMinimum(), r.yMinimum(), r.xMaximum(), r.yMaximum()]
 
     def _new_map(self, name, crs_str, extent_list):
-        return {"id": uuid.uuid4().hex[:8], "name": name, "crs": crs_str, "extent": extent_list}
+        return {"id": uuid.uuid4().hex[:8], "name": name, "crs": crs_str, "extent": extent_list,
+                "open": True}
+
+    # ------------------------------------------- vistas abiertas / catalogo
+    @staticmethod
+    def is_map_open(m):
+        """Un mapa con la vista cerrada sigue en el proyecto (y en el Catalogo), sin pestaña."""
+        return bool(m.get("open", True))
+
+    def is_layout_open(self, layout):
+        return any(value is layout for value in self._layouts_by_key.values())
+
+    def is_view_open(self, key):
+        if key.startswith("map:"):
+            m = self._get(key[4:])
+            return m is not None and self.is_map_open(m)
+        if key.startswith("layout:"):
+            return key[7:] in self._layouts_by_key
+        return False
+
+    @staticmethod
+    def project_layouts():
+        manager = QgsProject.instance().layoutManager()
+        try:
+            return list(manager.printLayouts())
+        except Exception:
+            return [l for l in manager.layouts() if isinstance(l, QgsPrintLayout)]
+
+    def _layout_by_name(self, name):
+        return QgsProject.instance().layoutManager().layoutByName(name)
+
+    def _refresh_catalog(self):
+        if self.catalog is not None and self._qt_object_alive(self.catalog):
+            self.catalog.refresh()
 
     def _next_name(self):
         used = set(m["name"] for m in self.maps)
@@ -1127,7 +1187,7 @@ class MultiMapPlugin:
         bar.blockSignals(True)
         while bar.count():
             bar.removeTab(0)
-        available = {"map:" + m["id"]: ("map", m) for m in self.maps}
+        available = {"map:" + m["id"]: ("map", m) for m in self.maps if self.is_map_open(m)}
         for name, layout in self._layouts_by_key.items():
             available["layout:" + name] = ("layout", layout)
         ordered = [key for key in self._view_order if key in available]
@@ -1147,7 +1207,7 @@ class MultiMapPlugin:
 
     def _refresh_tabs(self):
         self._ensure_layout_toolbar()
-        available = {"map:" + m["id"] for m in self.maps}
+        available = {"map:" + m["id"] for m in self.maps if self.is_map_open(m)}
         available.update("layout:" + name for name in self._layouts_by_key)
         ordered = [key for key in self._view_order if key in available]
         ordered.extend(key for key in available if key not in ordered)
@@ -1155,10 +1215,12 @@ class MultiMapPlugin:
         self._view_order = ordered + [key for key in hidden if key not in ordered]
         self._fill_tabbar(self.tabbar)
         self._fill_tabbar(self.layout_tabbar)
+        self._refresh_catalog()
 
     def _sync_tab(self):
         self._fill_tabbar(self.tabbar)
         self._fill_tabbar(self.layout_tabbar)
+        self._refresh_catalog()
 
     def _show_designer_view(self, designer):
         window = designer.window()
@@ -1204,7 +1266,7 @@ class MultiMapPlugin:
                        if isinstance(child, (QToolBar, QDockWidget)))
         unique = []
         for widget in widgets:
-            if self._is_layout_toolbar(widget):
+            if self._is_layout_toolbar(widget) or widget is self.catalog:
                 continue
             if widget not in unique:
                 unique.append(widget)
@@ -1413,7 +1475,7 @@ class MultiMapPlugin:
         a_dup = None
         if key.startswith("map:"):
             a_dup = menu.addAction("Duplicar mapa")
-            close_text = "Cerrar mapa"
+            close_text = "Cerrar vista del mapa"
         else:
             close_text = "Cerrar Layout"
         menu.addSeparator()
@@ -1730,31 +1792,229 @@ class MultiMapPlugin:
                 except RuntimeError:
                     pass
             return  # QGIS quita la pestaña al confirmar el cierre; si se cancela, queda abierta.
-        m = self._get(self._tab_id(idx, bar)) if idx >= 0 else None
+        map_id = self._tab_id(idx, bar) if idx >= 0 else None
+        if map_id:
+            self.close_map_view(map_id)
+
+    # ------------------------------------------------ abrir / cerrar / eliminar
+    def _neighbor_open_map(self, map_id):
+        """Mapa abierto mas cercano en la barra (para activarlo al cerrar la vista activa)."""
+        order = [k[4:] for k in self._current_view_order() if k.startswith("map:")]
+        if map_id in order:
+            pos = order.index(map_id)
+            for cand in order[pos + 1:] + list(reversed(order[:pos])):
+                if cand != map_id and self._get(cand) is not None:
+                    return cand
+        for m in self.maps:
+            if m["id"] != map_id and self.is_map_open(m):
+                return m["id"]
+        return None
+
+    def close_map_view(self, map_id):
+        """Cierra la pestaña del mapa SIN borrarlo: el mapa, sus capas y su vista siguen en el
+        proyecto y se reabren desde el Catalogo (como en ArcGIS Pro)."""
+        m = self._get(map_id)
+        if m is None or not self.is_map_open(m):
+            return False
+        if map_id == self.active_id:
+            neighbor = self._neighbor_open_map(map_id)
+            if neighbor is None:
+                self._warn("Debe quedar al menos un mapa abierto. Abre otro desde el Catálogo "
+                           "antes de cerrar este.")
+                return False
+            in_map_view = not (self.active_view_key or "").startswith("layout:")
+            if not self.activate(neighbor):      # cancelado por capas en edicion
+                return False
+            if in_map_view:
+                self.active_view_key = "map:" + neighbor
+        self._close_floating_map(map_id)
+        m["open"] = False
+        key = "map:" + map_id
+        if key in self._view_order:
+            self._view_order.remove(key)        # al reabrirlo aparece al final, como en ArcGIS Pro
+        self._refresh_tabs()
+        self._persist()
+        return True
+
+    def open_map(self, map_id):
+        """Abre (o trae al frente) la pestaña de un mapa."""
+        m = self._get(map_id)
         if m is None:
-            return
+            return False
+        was_open = self.is_map_open(m)
+        m["open"] = True
+        if map_id != self.active_id and not self.activate(map_id):
+            m["open"] = was_open
+            self._refresh_tabs()
+            return False
+        self.active_view_key = "map:" + map_id
+        self._show_map_view()
+        self._refresh_tabs()
+        self._persist()
+        return True
+
+    def delete_map(self, map_id):
+        """Elimina el mapa y sus capas del proyecto (solo desde el Catalogo, con confirmacion)."""
+        m = self._get(map_id)
+        if m is None:
+            return False
         if len(self.maps) <= 1:
-            self._warn("No se puede cerrar el único mapa.")
-            return
+            self._warn("No se puede eliminar el único mapa del proyecto.")
+            return False
         resp = QMessageBox.question(
             self.iface.mainWindow(),
-            "Cerrar mapa",
-            "Se eliminará el mapa «%s» y sus capas del proyecto. ¿Continuar?" % m["name"],
+            "Eliminar mapa",
+            "Se eliminará el mapa «%s» y sus capas del proyecto.\n"
+            "Esta acción no se puede deshacer. ¿Continuar?" % m["name"],
             qenum(QMessageBox, "StandardButton", "Yes") | qenum(QMessageBox, "StandardButton", "No"),
         )
         if resp != qenum(QMessageBox, "StandardButton", "Yes"):
-            return
-        self._close_floating_map(m["id"])
-        pos = self.maps.index(m)
-        if m["id"] == self.active_id:
-            neighbor = self.maps[pos + 1] if pos + 1 < len(self.maps) else self.maps[pos - 1]
-            if not self.activate(neighbor["id"], save_view=False):   # 'm' pasa a inactivo
-                return                                              # (cancelo por capas en edicion)
-        ids = [i for i in self._struct_layer_ids(self.stored.pop(m["id"], [])) if i]
+            return False
+        if map_id == self.active_id:
+            neighbor = self._neighbor_open_map(map_id)
+            if neighbor is None:    # ningun otro abierto: se abre el siguiente mapa del proyecto
+                neighbor = next(o["id"] for o in self.maps if o["id"] != map_id)
+            in_map_view = not (self.active_view_key or "").startswith("layout:")
+            if not self.activate(neighbor, save_view=False):   # 'm' pasa a inactivo
+                return False                                   # (cancelo por capas en edicion)
+            if in_map_view:
+                self.active_view_key = "map:" + neighbor
+        self._close_floating_map(map_id)
+        ids = [i for i in self._struct_layer_ids(self.stored.pop(map_id, [])) if i]
         self.maps.remove(m)
+        key = "map:" + map_id
+        if key in self._view_order:
+            self._view_order.remove(key)
         self._drop_layers(ids)                                # esten en el registro o en el almacen
         self._refresh_tabs()
+        self._refresh_bound_layout_items()
         self._persist()
+        return True
+
+    def _unique_layout_name(self, base):
+        manager = QgsProject.instance().layoutManager()
+        name, n = base, 2
+        while manager.layoutByName(name) is not None:
+            name = "%s %d" % (base, n)
+            n += 1
+        return name
+
+    def _on_layout_removed(self, name, *_):
+        key = "layout:" + str(name)
+        if key in self._view_order and str(name) not in self._layouts_by_key:
+            self._view_order.remove(key)
+        self._refresh_catalog()
+
+    # ------------------------------------------------------- acciones del Catalogo
+    def catalog_open(self, key):
+        if key.startswith("map:"):
+            self.open_map(key[4:])
+            return
+        if not key.startswith("layout:"):
+            return
+        layout = self._layouts_by_key.get(key[7:]) or self._layout_by_name(key[7:])
+        if layout is None:
+            return
+        designer = self._designer_by_layout.get(id(layout))
+        if designer is not None:
+            self.active_view_key = "layout:" + layout.name()
+            self._sync_tab()
+            self._show_designer_view(designer)
+        else:
+            self.iface.openLayoutDesigner(layout)   # _on_designer_opened crea la pestaña
+
+    def catalog_close(self, key):
+        if key.startswith("map:"):
+            self.close_map_view(key[4:])
+        elif key.startswith("layout:"):
+            layout = self._layouts_by_key.get(key[7:])
+            designer = self._designer_by_layout.get(id(layout)) if layout is not None else None
+            if designer is not None:
+                try:
+                    designer.window().close()
+                except RuntimeError:
+                    pass
+
+    def catalog_rename(self, key):
+        if key.startswith("map:"):
+            m = self._get(key[4:])
+            if m is None:
+                return
+            new, ok = QInputDialog.getText(self.iface.mainWindow(), "Renombrar mapa",
+                                           "Nombre del mapa:", text=m["name"])
+            new = new.strip() if ok else ""
+            if not new or new == m["name"]:
+                return
+            m["name"] = new
+            floating = self._map_windows.get(m["id"])
+            if floating is not None:
+                floating.setWindowTitle("Multimapa — %s" % new)
+            self._refresh_tabs()
+            self._persist()
+        elif key.startswith("layout:"):
+            layout = self._layout_by_name(key[7:])
+            if layout is None:
+                return
+            new, ok = QInputDialog.getText(self.iface.mainWindow(), "Renombrar Layout",
+                                           "Nombre del Layout:", text=layout.name())
+            new = new.strip() if ok else ""
+            if not new or new == layout.name():
+                return
+            other = self._layout_by_name(new)
+            if other is not None and other is not layout:
+                self._warn("Ya existe un Layout con ese nombre.")
+                return
+            layout.setName(new)
+            self._mark_project_dirty()
+            self._refresh_catalog()
+
+    def catalog_duplicate(self, key):
+        if key.startswith("map:"):
+            map_id = key[4:]
+            if map_id != self.active_id and not self.open_map(map_id):
+                return
+            self.duplicate_map()
+        elif key.startswith("layout:"):
+            layout = self._layout_by_name(key[7:])
+            if layout is None:
+                return
+            name = self._unique_layout_name(layout.name() + " (copia)")
+            dup = QgsProject.instance().layoutManager().duplicateLayout(layout, name)
+            if dup is None:
+                self._warn("No se pudo duplicar el Layout.")
+                return
+            self._mark_project_dirty()
+            self._refresh_catalog()
+
+    def catalog_delete(self, key):
+        if key.startswith("map:"):
+            self.delete_map(key[4:])
+        elif key.startswith("layout:"):
+            layout = self._layout_by_name(key[7:])
+            if layout is None:
+                return
+            resp = QMessageBox.question(
+                self.iface.mainWindow(),
+                "Eliminar Layout",
+                "Se eliminará el Layout «%s» del proyecto. ¿Continuar?" % layout.name(),
+                qenum(QMessageBox, "StandardButton", "Yes") | qenum(QMessageBox, "StandardButton", "No"),
+            )
+            if resp != qenum(QMessageBox, "StandardButton", "Yes"):
+                return
+            # Primero se cierra su diseñador (si esta abierto): limpia pestaña y estado interno.
+            designer = self._designer_by_layout.get(id(layout))
+            if designer is not None:
+                try:
+                    window = designer.window()
+                    window.close()
+                    if id(layout) in self._designer_by_layout:
+                        return      # el cierre se cancelo: no se elimina
+                except RuntimeError:
+                    pass
+            QgsProject.instance().layoutManager().removeLayout(layout)
+            self._mark_project_dirty()
+            self._refresh_tabs()
+            self._persist()
 
     # --------------------------------------------------------------- maps
     def _ensure_init(self, persist=True):
@@ -2003,8 +2263,11 @@ class MultiMapPlugin:
         m = self._get(map_id)
         if m is None:
             return False
+        was_open = self.is_map_open(m)
+        m["open"] = True      # el mapa activo siempre tiene su pestaña abierta
         if swap and self.active_id and self.active_id != map_id and not self._release_edits(self._active_layers()):
-            self._sync_tab()          # el usuario cancelo: la pestana vuelve al mapa activo
+            m["open"] = was_open
+            self._refresh_tabs()      # el usuario cancelo: la pestana vuelve al mapa activo
             return False
         self._busy = True
         self.canvas.freeze(True)          # sin redibujados intermedios durante el intercambio
@@ -2827,6 +3090,8 @@ class MultiMapPlugin:
             for layout in ordered:
                 if layout.name() in opened_names:
                     continue
+                if layout.name() not in preferred:
+                    continue    # cerrado al guardar (o proyecto sin estado): queda en el Catalogo
                 try:
                     self.iface.openLayoutDesigner(layout)
                 except Exception as e:

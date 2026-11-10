@@ -123,7 +123,7 @@ class ProTabBar(QTabBar):
 
     # ------------------------------------------------------------- pestanas
     def add_map_tab(self, icon, text, map_id):
-        return self.add_view_tab(icon, text, "map:" + str(map_id), "Cerrar mapa")
+        return self.add_view_tab(icon, text, "map:" + str(map_id), "Cerrar vista (el mapa sigue en el Catálogo)")
 
     def add_layout_tab(self, icon, text, layout_name):
         return self.add_view_tab(icon, text, "layout:" + str(layout_name), "Cerrar Layout")

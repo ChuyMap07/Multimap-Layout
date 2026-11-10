@@ -1,4 +1,4 @@
-# Multimap Layout 1.0.1
+# Multimap Layout 1.1.0
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
 Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Probado en 3.34 y 4.2.
@@ -20,6 +20,12 @@ proyecto, de modo que QGIS y los demás complementos solo ven las capas del mapa
 - Clic derecho: renombrar y cerrar; en mapas también duplicar y mover a otra pantalla. Se pueden arrastrar pestañas fuera de la
   barra para abrir mapas en ventana propia o mover Layouts a otro monitor.
 - Las ventanas flotantes de mapa tienen árbol de capas, navegación, identificación y escala.
+
+## Catálogo
+- Panel con todos los mapas y Layouts del proyecto (el activo en negrita, los cerrados en cursiva).
+- Doble clic o Enter abre; clic derecho: Abrir, Cerrar vista, Renombrar (F2), Duplicar, Eliminar (Supr), Nuevo mapa, Nuevo Layout.
+- Cerrar una pestaña solo cierra la vista (como en ArcGIS Pro). Para borrar un mapa o Layout se usa Eliminar en el Catálogo.
+- Debe quedar al menos un mapa abierto (el lienzo principal siempre muestra uno).
 
 ## Mapas y capas
 - **Duplicar mapa / Copiar capa:** cada capa se copia de forma independiente: capas temporales (con sus datos), filtros, uniones,
