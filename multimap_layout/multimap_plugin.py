@@ -21,7 +21,6 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsFeature,
     QgsLayerTree,
-    QgsLayerTreeGroup,
     QgsLayoutItem,
     QgsLayoutItemLabel,
     QgsLayoutItemLegend,
@@ -203,6 +202,10 @@ class MultiMapPlugin:
         self._linking = False
         self._pending_side = []
         self.active_view_key = None
+        # QGIS borra las relaciones y los registros de temas de mapa de las capas que salen del
+        # registro. Se "estacionan" aqui mientras su mapa esta inactivo y se reponen al volver.
+        self._parked_relations = {}     # id de relacion -> XML de la relacion
+        self._parked_themes = {}        # nombre del tema -> {id de capa: MapThemeLayerRecord}
         self._main_central = None
         self.view_stack = None
         self._main_chrome_visibility = None
@@ -758,6 +761,134 @@ class MultiMapPlugin:
         lyr = QgsProject.instance().mapLayer(lid)
         return lyr if lyr is not None else self._hidden.get(lid)
 
+    # ----------------------------- relaciones y temas de mapa de capas ocultas
+    @staticmethod
+    def _relation_xml(rel):
+        from qgis.PyQt.QtXml import QDomDocument
+        doc = QDomDocument()
+        holder = doc.createElement("relations")
+        doc.appendChild(holder)
+        rel.writeXml(holder, doc)
+        return doc.toString()
+
+    def _park_layer_links(self, lyr):
+        """Antes de sacar una capa del registro: guarda sus relaciones y sus registros en temas."""
+        lid = lyr.id()
+        prj = QgsProject.instance()
+        try:
+            for rid, rel in prj.relationManager().relations().items():
+                if lid in (rel.referencingLayerId(), rel.referencedLayerId()) and rid not in self._parked_relations:
+                    self._parked_relations[rid] = self._relation_xml(rel)
+        except Exception as e:
+            self._log("No se pudo conservar una relación: %s" % e)
+        try:
+            coll = prj.mapThemeCollection()
+            for name in coll.mapThemes():
+                for rec in coll.mapThemeState(name).layerRecords():
+                    if rec.layer() is lyr:
+                        self._parked_themes.setdefault(name, {})[lid] = rec
+        except Exception as e:
+            self._log("No se pudo conservar un tema de mapa: %s" % e)
+
+    def _restore_layer_links(self):
+        """Repone las relaciones y registros de temas cuyas capas vuelven a estar en el registro."""
+        prj = QgsProject.instance()
+        if self._parked_relations:
+            from qgis.PyQt.QtXml import QDomDocument
+            from qgis.core import QgsRelation
+            for rid, xml in list(self._parked_relations.items()):
+                doc = QDomDocument()
+                doc.setContent(xml)
+                node = doc.documentElement().firstChildElement("relation")
+                a, b = node.attribute("referencingLayer"), node.attribute("referencedLayer")
+                if prj.mapLayer(a) is None or prj.mapLayer(b) is None:
+                    continue
+                try:
+                    rel = QgsRelation.createFromXml(node, QgsReadWriteContext())
+                    if rel.isValid():
+                        prj.relationManager().addRelation(rel)
+                        del self._parked_relations[rid]
+                except Exception as e:
+                    self._log("No se pudo reponer la relación %s: %s" % (rid, e))
+        if self._parked_themes:
+            coll = prj.mapThemeCollection()
+            for name, recs in list(self._parked_themes.items()):
+                if not coll.hasMapTheme(name):
+                    continue
+                back = {lid: rec for lid, rec in recs.items() if prj.mapLayer(lid) is not None}
+                if not back:
+                    continue
+                state = coll.mapThemeState(name)
+                for lid, rec in back.items():
+                    state.addLayerRecord(rec)
+                    del recs[lid]
+                coll.update(name, state)
+                if not recs:
+                    del self._parked_themes[name]
+
+    def _forget_layer_links(self, ids):
+        ids = set(ids)
+        for rid, xml in list(self._parked_relations.items()):
+            if any(('"%s"' % i) in xml for i in ids):
+                del self._parked_relations[rid]
+        for name, recs in list(self._parked_themes.items()):
+            for i in ids:
+                recs.pop(i, None)
+            if not recs:
+                del self._parked_themes[name]
+
+    def _inject_layer_links(self, doc):
+        """Al guardar: las relaciones y temas de los mapas inactivos se escriben en el proyecto, para
+        que el formato portable (y QGIS sin el complemento) los conserve."""
+        from qgis.PyQt.QtXml import QDomDocument
+        root = doc.documentElement()
+        if self._parked_relations:
+            rels = root.firstChildElement("relations")
+            if rels.isNull():
+                rels = doc.createElement("relations")
+                root.appendChild(rels)
+            for xml in self._parked_relations.values():
+                d = QDomDocument()
+                d.setContent(xml)
+                rels.appendChild(doc.importNode(d.documentElement().firstChildElement("relation"), True))
+        if self._parked_themes:
+            from qgis.core import QgsMapThemeCollection
+            prj = QgsProject.instance()
+            coll = prj.mapThemeCollection()
+            temp = QgsMapThemeCollection(prj)
+            for name in coll.mapThemes():
+                state = coll.mapThemeState(name)
+                for rec in self._parked_themes.get(name, {}).values():
+                    state.addLayerRecord(rec)
+                temp.insert(name, state)
+            tdoc = QDomDocument()
+            tdoc.appendChild(tdoc.createElement("qgis"))
+            temp.writeXml(tdoc)
+            new = tdoc.documentElement().firstChildElement("visibility-presets")
+            if not new.isNull():
+                old = root.firstChildElement("visibility-presets")
+                imported = doc.importNode(new, True)
+                if old.isNull():
+                    root.appendChild(imported)
+                else:
+                    root.replaceChild(imported, old)
+
+    def _park_relations_from_doc(self, doc):
+        """Al abrir: QGIS lee las relaciones DESPUES de que se ocultan las capas de los mapas
+        inactivos y descartaria las suyas; se estacionan desde el XML del proyecto."""
+        rels = doc.documentElement().firstChildElement("relations")
+        node = rels.firstChildElement("relation")
+        from qgis.PyQt.QtXml import QDomDocument
+        while not node.isNull():
+            a, b = node.attribute("referencingLayer"), node.attribute("referencedLayer")
+            if a in self._hidden or b in self._hidden:
+                d = QDomDocument()
+                holder = d.createElement("relations")
+                d.appendChild(holder)
+                holder.appendChild(d.importNode(node, True))
+                self._parked_relations[node.attribute("id")] = d.toString()
+            node = node.nextSiblingElement("relation")
+
     def _hide_layer(self, lyr):
         """La capa sale del registro del proyecto (nadie mas la ve) pero sigue viva en el almacen.
         QGIS quita sola sus nodos del arbol al sacarla del registro."""
@@ -766,6 +897,7 @@ class MultiMapPlugin:
         lid = lyr.id()
         if lid in self._hidden:
             return
+        self._park_layer_links(lyr)
         taken = QgsProject.instance().takeMapLayer(lyr)
         if taken is not None:
             self._hidden[lid] = taken
@@ -775,12 +907,14 @@ class MultiMapPlugin:
         lyr = self._hidden.pop(lid, None)
         if lyr is not None:
             QgsProject.instance().addMapLayer(lyr, False)
+            self._restore_layer_links()
             return lyr
         return QgsProject.instance().mapLayer(lid)
 
     def _drop_layers(self, ids):
         """Elimina capas definitivamente, esten en el registro o en el almacen."""
         reg = []
+        self._forget_layer_links(ids)
         for lid in ids:
             if lid in self._hidden:
                 self._hidden.pop(lid, None)
@@ -879,6 +1013,11 @@ class MultiMapPlugin:
                 self._hide_layer(prj.mapLayer(lid))
         except Exception as e:
             self._log("No se pudieron recuperar las capas de los otros mapas: %s" % e)
+        finally:
+            try:
+                self._park_relations_from_doc(doc)
+            except Exception as e:
+                self._log("No se pudieron conservar las relaciones de otros mapas: %s" % e)
 
     def _migrate_flat_nodes(self):
         """Proyectos guardados con versiones anteriores: los nodos planos pasan al almacen."""
@@ -2429,7 +2568,6 @@ class MultiMapPlugin:
         """Clona varias capas a la vez, junto con las tablas de sus uniones y las capas que
         usan las capas virtuales. Devuelve (idmap, extras, fallidas): idmap = id original ->
         copia; extras = copias de capas auxiliares que no estaban en 'layers'."""
-        prj = QgsProject.instance()
         idmap, pairs, extras, failed = {}, [], [], []
         virt = {}               # capas virtuales: se copian al final, cuando ya existen sus capas
         todo = [(lyr, False) for lyr in layers]
@@ -3301,6 +3439,8 @@ class MultiMapPlugin:
     def _on_cleared(self, *_):
         self._loading = True
         self._hidden.clear()
+        self._parked_relations.clear()
+        self._parked_themes.clear()
         self._layer_by_map.clear()
         self._pending.clear()
         self._cancel_deferred_layout_binds()
@@ -3334,6 +3474,11 @@ class MultiMapPlugin:
             self._save_view()
             self._persist()
         self._inject_hidden(doc)
+        if doc is not None:
+            try:
+                self._inject_layer_links(doc)
+            except Exception as e:
+                self._log("No se pudieron guardar relaciones/temas de otros mapas: %s" % e)
 
     def _on_project_new(self, *_):
         self._loading = False
@@ -3421,7 +3566,9 @@ class MultiMapPlugin:
                 self.activate(self.active_id, restore_view=True, save_view=False, persist=False, swap=False)
             finally:
                 self._quiet_crs = False
-        elif not self._root().children():
+        else:
+            # Proyecto sin estado del complemento (proyecto normal de QGIS, o recargar el
+            # complemento): todo lo que hay en el arbol pasa a ser «Mapa 1».
             self._ensure_init(persist=False)
         self._refresh_bound_layout_items()
         self._update_link_button()

@@ -1,7 +1,7 @@
-# Multimap Layout 1.3.1
+# Multimap Layout 1.3.2
 
 Pestañas de mapas independientes y de Layout en un mismo proyecto de QGIS, al estilo de ArcGIS Pro.
-Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Probado en 3.34 y 4.2.
+Compatible con QGIS 3.22 en adelante, incluido QGIS 4 (Qt6). Pruebas automáticas en QGIS 3.34 (ver `tests/`).
 
 Instalar: QGIS > Complementos > Instalar desde ZIP > multimap_layout.zip
 
@@ -70,10 +70,24 @@ volver a guardarlo sin perder nada. Con el complemento, esos grupos se reconocen
 - Los proyectos de la 0.8.x (nodos planos) se migran solos al abrirlos. Al descargar o desinstalar el complemento, las capas
   ocultas vuelven al proyecto en un grupo.
 
+## Compatibilidad con otros complementos y funciones de QGIS
+Al cambiar de pestaña, las capas del mapa que deja de estar activo **salen del registro del proyecto** (QGIS emite
+`layersWillBeRemoved` / `layersRemoved`) y las del mapa nuevo **entran** (`layersAdded`). Por eso los demás complementos (Processing,
+selectores de capas, paneles…) trabajan solo con el mapa activo sin adaptarse. Verificado en QGIS 3.34:
+- Processing: los resultados se agregan al mapa activo y se quedan en él.
+- Selectores de capas (`QgsMapLayerComboBox`), panel de capas y capa activa: solo el mapa activo.
+- Selección de entidades, edición pendiente (Guardar / Descartar / Cancelar), CRS y orden de capas: por mapa.
+- **Relaciones** entre capas y **temas de mapa**: QGIS los borra al sacar capas del registro; el complemento los conserva mientras
+  el mapa está inactivo y los repone al volver, también al guardar y abrir (y el archivo portable los trae completos).
+- Ajuste (snapping) por capa, tablas de atributos abiertas: se conservan.
+Consecuencia a tener en cuenta: un complemento que guarda estado propio por capa lo verá como capa quitada y vuelta a agregar al
+cambiar de pestaña.
+
 ## Limitaciones conocidas
 - Las vistas acopladas y las ventanas solo navegan, identifican y miden; para editar o usar otras herramientas de QGIS se pulsa
   *Activar* (el lienzo principal es el único conectado a todas las herramientas de QGIS).
 - Un mapa solo puede estar en una vista secundaria a la vez (acoplada o en ventana).
 - Proyectos guardados en base de datos o en red permanecen en el formato propio.
 - No se ha probado con proyectos muy grandes ni con deshacer/rehacer entre cambios de mapa.
+- En proyectos guardados en el formato propio (no portable), los temas de mapa pierden las capas de los mapas inactivos al abrir.
 - Interfaz solo en español.

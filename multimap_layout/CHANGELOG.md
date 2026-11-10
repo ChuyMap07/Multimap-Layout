@@ -1,5 +1,12 @@
 # Cambios
 
+## 1.3.2
+- Corrige pérdida de datos: las **relaciones** entre capas y las capas de los **temas de mapa** se borraban al cambiar de pestaña
+  (QGIS las elimina al sacar capas del registro). Ahora se conservan y se reponen, también al guardar y abrir el proyecto.
+- Corrige: al abrir un proyecto normal de QGIS (sin datos del complemento) o recargar el complemento no se creaba «Mapa 1»
+  (sin pestaña de mapa ni Catálogo).
+- Pruebas de integración en QGIS real (`tests/run_qgis_tests.sh`).
+
 ## 1.3.1
 - «Guardar como plantilla» pide solo el nombre y guarda siempre en la carpeta general de plantillas de QGIS: la plantilla queda
   disponible en cualquier proyecto (avisa antes de reemplazar una existente). Ya no se leen plantillas de la carpeta del proyecto.
