@@ -134,6 +134,7 @@ class CatalogDock(QDockWidget):
                 menu.addAction("Nuevo mapa").triggered.connect(lambda *_: p.add_map())
             if key != "folder:maps":
                 menu.addAction("Nuevo Layout").triggered.connect(lambda *_: p.new_layout())
+                p._fill_template_menu(menu.addMenu("Plantillas"))
         else:
             is_map = key.startswith("map:")
             opened = p.is_view_open(key)

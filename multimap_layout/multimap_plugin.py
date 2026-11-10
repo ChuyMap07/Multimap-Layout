@@ -66,6 +66,7 @@ from .common import FLAT, KEY, NONE, PROP, SKIP, qenum
 from .dialogs import LayoutDialog, TabNameEdit
 from .map_window import MapViewWindow, SideMapView
 from .portable import GROUP_PROP, make_portable
+from . import templates
 from .tabbar import (
     ProTabBar,
     StripPlacer,
@@ -1117,6 +1118,17 @@ class MultiMapPlugin:
         hrow.addWidget(self.layout_tabbar)
         hrow.addWidget(self.layout_add_map)
         hrow.addStretch(1)
+        # Plantillas (.qpt): guardar, crear y reemplazar sin buscar en los menus del diseñador.
+        self.layout_templates = QToolButton()
+        self.layout_templates.setText("Plantillas")
+        self.layout_templates.setToolTip("Plantillas de Layout: guardar, crear desde plantilla, reemplazar")
+        self.layout_templates.setAutoRaise(True)
+        self.layout_templates.setFixedHeight(h)
+        tmenu = QMenu(self.layout_templates)
+        tmenu.aboutToShow.connect(lambda m=tmenu: self._fill_template_menu(m, current=True))
+        self.layout_templates.setMenu(tmenu)
+        self.layout_templates.setPopupMode(qenum(QToolButton, "ToolButtonPopupMode", "InstantPopup"))
+        hrow.addWidget(self.layout_templates)
         row.hide()
         self._layout_row = row
         self._connect_tabbar(self.layout_tabbar)
@@ -1125,6 +1137,7 @@ class MultiMapPlugin:
         self.layout_tabbar.apply_colors(colors)
         row.setStyleSheet(strip_stylesheet(colors))
         self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
+        self.layout_templates.setStyleSheet(add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
 
     def _attach_layout_strip(self, window):
         """Coloca la fila de pestañas encima de la hoja del Layout de 'window'."""
@@ -1464,6 +1477,8 @@ class MultiMapPlugin:
             self.layout_tabbar.apply_colors(colors)
             self.layout_add_map.setStyleSheet(add_button_stylesheet(colors))
             self._layout_row.setStyleSheet(strip_stylesheet(colors))
+            self.layout_templates.setStyleSheet(
+                add_button_stylesheet(colors).replace("font-size: 11pt;", "padding: 0px 8px;"))
         except Exception as e:
             QgsMessageLog.logMessage("No se pudo igualar el color de la barra: %s" % e, "Multimap Layout")
 
@@ -2037,6 +2052,105 @@ class MultiMapPlugin:
         self._refresh_bound_layout_items()
         self._persist()
         return True
+
+    # ---------------------------------------------------------------- plantillas
+    def _current_layout(self):
+        try:
+            return self._active_designer.layout() if self._active_designer is not None else None
+        except RuntimeError:
+            return None
+
+    def _fill_template_menu(self, menu, current=False):
+        """current=True: menu de la barra del Layout (incluye acciones sobre el Layout abierto)."""
+        menu.clear()
+        found = templates.list_templates()
+        layout = self._current_layout() if current else None
+        if layout is not None:
+            menu.addAction("Guardar este Layout como plantilla…").triggered.connect(
+                lambda *_: self.template_save(layout))
+            menu.addSeparator()
+        new_menu = menu.addMenu("Nuevo Layout desde plantilla")
+        for name, path in found:
+            new_menu.addAction(name).triggered.connect(lambda _c=False, p=path: self.template_new(p))
+        if found:
+            new_menu.addSeparator()
+        new_menu.addAction("Otro archivo…").triggered.connect(lambda *_: self.template_new(None))
+        if layout is not None:
+            rep_menu = menu.addMenu("Reemplazar este Layout con plantilla")
+            for name, path in found:
+                rep_menu.addAction(name).triggered.connect(
+                    lambda _c=False, p=path: self.template_apply(layout, p))
+            if found:
+                rep_menu.addSeparator()
+            rep_menu.addAction("Otro archivo…").triggered.connect(lambda *_: self.template_apply(layout, None))
+        menu.addSeparator()
+        menu.addAction("Abrir carpeta de plantillas").triggered.connect(lambda *_: templates.open_folder())
+
+    def _ask_template_file(self, title):
+        from qgis.PyQt.QtWidgets import QFileDialog
+        path, _f = QFileDialog.getOpenFileName(self.iface.mainWindow(), title,
+                                               templates.user_template_dir(), "Plantillas de Layout (*.qpt)")
+        return path or None
+
+    def template_save(self, layout):
+        from qgis.PyQt.QtWidgets import QFileDialog
+        start = os.path.join(templates.user_template_dir(), layout.name() + ".qpt")
+        path, _f = QFileDialog.getSaveFileName(self.iface.mainWindow(), "Guardar como plantilla", start,
+                                               "Plantillas de Layout (*.qpt)")
+        if not path:
+            return
+        try:
+            path = templates.save_template(layout, path)
+            self._ok("Plantilla guardada: %s" % os.path.basename(path))
+        except Exception as e:
+            self._warn("No se pudo guardar la plantilla: %s" % e)
+
+    def _clean_template_bindings(self, layout):
+        """Los elementos de una plantilla pueden venir enlazados a mapas de OTRO proyecto: se sueltan
+        para que el complemento ofrezca enlazarlos a los mapas de este."""
+        ids = {m["id"] for m in self.maps}
+        for it in self._layout_items(layout):
+            mid = str(it.customProperty(PROP, "") or "")
+            if mid and mid not in ids:
+                it.removeCustomProperty(PROP)
+
+    def template_new(self, path):
+        path = path or self._ask_template_file("Nuevo Layout desde plantilla")
+        if not path:
+            return
+        base = os.path.splitext(os.path.basename(path))[0]
+        try:
+            layout = templates.new_layout_from(path, self._unique_layout_name(base))
+        except Exception as e:
+            self._warn("No se pudo crear el Layout desde la plantilla: %s" % e)
+            return
+        self._clean_template_bindings(layout)
+        self._mark_project_dirty()
+        self.iface.openLayoutDesigner(layout)
+
+    def template_apply(self, layout, path):
+        path = path or self._ask_template_file("Reemplazar con plantilla")
+        if not path:
+            return
+        resp = QMessageBox.question(
+            self.iface.mainWindow(), "Reemplazar con plantilla",
+            "Se reemplazará todo el contenido de «%s» con la plantilla «%s». ¿Continuar?"
+            % (layout.name(), os.path.splitext(os.path.basename(path))[0]),
+            qenum(QMessageBox, "StandardButton", "Yes") | qenum(QMessageBox, "StandardButton", "No"),
+        )
+        if resp != qenum(QMessageBox, "StandardButton", "Yes"):
+            return
+        name = layout.name()
+        try:
+            templates.load_into(layout, path, clear=True)
+        except Exception as e:
+            self._warn("No se pudo aplicar la plantilla: %s" % e)
+            return
+        if layout.name() != name:
+            layout.setName(name)        # la plantilla no cambia el nombre ni la pestaña
+        self._clean_template_bindings(layout)
+        self._mark_project_dirty()
+        self._refresh_bound_layout_items()
 
     def _unique_layout_name(self, base):
         manager = QgsProject.instance().layoutManager()

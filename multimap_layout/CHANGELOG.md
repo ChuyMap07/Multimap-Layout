@@ -1,5 +1,9 @@
 # Cambios
 
+## 1.3.0
+- Botón **Plantillas** en la barra de pestañas del Layout (y en el Catálogo): guardar como plantilla, nuevo Layout desde
+  plantilla, reemplazar con plantilla y abrir la carpeta de plantillas. Comparte la carpeta con el Administrador de diseños de QGIS.
+
 ## 1.2.0
 - **Vistas lado a lado:** «Abrir al lado» acopla un mapa a la derecha del lienzo principal dentro de la ventana de QGIS;
   «Activar» intercambia esa vista con el lienzo principal. Se guardan con el proyecto.
